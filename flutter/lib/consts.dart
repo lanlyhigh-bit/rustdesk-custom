@@ -148,8 +148,7 @@ const String kOptionRemoteMenubarDragLeft = "remote-menubar-drag-left";
 const String kOptionRemoteMenubarDragRight = "remote-menubar-drag-right";
 const String kOptionRemoteMenubarEdge = "remote-menubar-edge";
 const String kOptionRemoteMenubarFraction = "remote-menubar-frac";
-const String kOptionAllowMultiEdgeToolbarDock =
-    "allow-multi-edge-toolbar-dock";
+const String kOptionAllowMultiEdgeToolbarDock = "allow-multi-edge-toolbar-dock";
 const String kOptionHideAbTagsPanel = "hideAbTagsPanel";
 const String kOptionRemoteMenubarState = "remoteMenubarState";
 const String kOptionPeerSorting = "peer-sorting";
@@ -173,9 +172,12 @@ const String kOptionShowVirtualMouse = "show-virtual-mouse";
 const String kOptionVirtualMouseScale = "virtual-mouse-scale";
 const String kOptionShowVirtualJoystick = "show-virtual-joystick";
 const String kOptionAllowAskForNoteAtEndOfConnection = "allow-ask-for-note";
-const String kOptionAllowMonitorSwitchMainToolbar = "allow-monitor-switch-main-toolbar";
-const String kOptionAllowMonitorSwitchMinToolbar = "allow-monitor-switch-min-toolbar";
-const String kOptionEnableShowTerminalExtraKeys = "enable-show-terminal-extra-keys";
+const String kOptionAllowMonitorSwitchMainToolbar =
+    "allow-monitor-switch-main-toolbar";
+const String kOptionAllowMonitorSwitchMinToolbar =
+    "allow-monitor-switch-min-toolbar";
+const String kOptionEnableShowTerminalExtraKeys =
+    "enable-show-terminal-extra-keys";
 const String kOptionShowTerminalCtrlKeys = "show-terminal-extra-ctrl-keys";
 
 // network options
@@ -212,8 +214,10 @@ const String kOptionDisableFloatingWindow = "disable-floating-window";
 
 const String kOptionKeepScreenOn = "keep-screen-on";
 
-const String kOptionKeepAwakeDuringIncomingSessions = "keep-awake-during-incoming-sessions";
-const String kOptionKeepAwakeDuringOutgoingSessions = "keep-awake-during-outgoing-sessions";
+const String kOptionKeepAwakeDuringIncomingSessions =
+    "keep-awake-during-incoming-sessions";
+const String kOptionKeepAwakeDuringOutgoingSessions =
+    "keep-awake-during-outgoing-sessions";
 
 const String kOptionShowMobileAction = "showMobileActions";
 
@@ -278,6 +282,25 @@ const String kKeyTrackpadSpeed = 'trackpad-speed';
 const int kMinTrackpadSpeed = 10;
 const int kDefaultTrackpadSpeed = 100;
 const int kMaxTrackpadSpeed = 1000;
+
+// wheel speed (ratio multiplier for the normal mouse wheel, 1.0 = original behavior)
+const String kKeyWheelSpeed = 'wheel-speed';
+const double kMinWheelSpeed = 0.25;
+const double kDefaultWheelSpeed = 0.75;
+const double kMaxWheelSpeed = 1.50;
+
+// scroll gesture mode (two-finger vertical drag as remote scroll, Android)
+// twoFinger = two-finger vertical drag scrolls, three fingers do nothing;
+// threeFinger = keep the legacy three-finger scroll, two fingers remain scale.
+const String kKeyScrollGesture = 'scroll-gesture';
+const String kScrollGestureTwoFinger = 'twoFinger';
+const String kScrollGestureThreeFinger = 'threeFinger';
+
+// scroll speed ratio for gesture scroll (independent of wheel-speed)
+const String kKeyScrollSpeed = 'scroll-speed';
+const double kMinScrollSpeed = 0.25;
+const double kDefaultScrollSpeed = 0.75;
+const double kMaxScrollSpeed = 1.50;
 
 // relative mouse mode
 /// Throttle duration (in milliseconds) for updating pointer lock center during

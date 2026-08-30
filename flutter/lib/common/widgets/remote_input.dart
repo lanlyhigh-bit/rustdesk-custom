@@ -517,17 +517,43 @@ class _RawTouchGestureDetectorRegionState
   }
 
   get onHoldDragCancel => null;
+
+  /// Accumulates gesture scroll delta into whole wheel steps.
+  ///
+  /// Gesture delta (dy) is first scaled down by 4 (legacy three-finger
+  /// behavior), then multiplied by the gesture scroll speed ratio
+  /// ([inputModel.scrollSpeed], 0.25 .. 1.50). The fractional part is kept so
+  /// that small movements at low speed still produce wheel events over time.
+  void _accumulateGestureScroll(double dy) {
+    _mouseScrollIntegral += dy / 4 * inputModel.scrollSpeed;
+    final int steps = _mouseScrollIntegral.truncate();
+    if (steps != 0) {
+      inputModel.scroll(steps);
+      _mouseScrollIntegral -= steps.toDouble();
+    }
+  }
+
+  // Two-finger vertical scroll (mobile). Disabled when the peer is an Android
+  // device, matching the legacy three-finger behavior.
+  onTwoFingerScrollStart(DragStartDetails d) async {
+    if (isNotTouchBasedDevice()) return;
+    if (ffi.ffiModel.isPeerAndroid) return;
+    _mouseScrollIntegral = 0;
+  }
+
+  onTwoFingerScrollUpdate(DragUpdateDetails d) async {
+    if (isNotTouchBasedDevice()) return;
+    if (canvasLocked) return;
+    if (ffi.ffiModel.isPeerAndroid) return;
+    _accumulateGestureScroll(d.delta.dy);
+  }
+
+  onTwoFingerScrollEnd(DragEndDetails d) async {}
+
   get onThreeFingerVerticalDragUpdate => ffi.ffiModel.isPeerAndroid
       ? null
       : (d) {
-          _mouseScrollIntegral += d.delta.dy / 4;
-          if (_mouseScrollIntegral > 1) {
-            inputModel.scroll(1);
-            _mouseScrollIntegral = 0;
-          } else if (_mouseScrollIntegral < -1) {
-            inputModel.scroll(-1);
-            _mouseScrollIntegral = 0;
-          }
+          _accumulateGestureScroll(d.delta.dy);
         };
 
   makeGestures(BuildContext context) {
@@ -585,6 +611,10 @@ class _RawTouchGestureDetectorRegionState
           ..onTwoFingerScaleStart = onTwoFingerScaleStart
           ..onTwoFingerScaleUpdate = onTwoFingerScaleUpdate
           ..onTwoFingerScaleEnd = onTwoFingerScaleEnd
+          ..twoFingerScrollEnabled = inputModel.isScrollGestureTwoFinger
+          ..onTwoFingerScrollStart = onTwoFingerScrollStart
+          ..onTwoFingerScrollUpdate = onTwoFingerScrollUpdate
+          ..onTwoFingerScrollEnd = onTwoFingerScrollEnd
           ..onThreeFingerVerticalDragUpdate = onThreeFingerVerticalDragUpdate;
       }),
     };

@@ -366,8 +366,10 @@ class InputModel {
               !model.isViewCamera) {
             _sideButtonDownModels[mb] = model;
             // Fire-and-forget to avoid blocking the platform channel handler.
-            unawaited(model._sendMouseUnchecked(type, mb).catchError((Object e) {
-              debugPrint('[InputModel] failed to send side button $type for $mb: $e');
+            unawaited(
+                model._sendMouseUnchecked(type, mb).catchError((Object e) {
+              debugPrint(
+                  '[InputModel] failed to send side button $type for $mb: $e');
             }));
           }
         } else {
@@ -377,8 +379,10 @@ class InputModel {
           // release always goes through even if permissions changed.
           final model = _sideButtonDownModels.remove(mb);
           if (model != null) {
-            unawaited(model._sendMouseUnchecked(type, mb).catchError((Object e) {
-              debugPrint('[InputModel] failed to send side button $type for $mb: $e');
+            unawaited(
+                model._sendMouseUnchecked(type, mb).catchError((Object e) {
+              debugPrint(
+                  '[InputModel] failed to send side button $type for $mb: $e');
             }));
           }
         }
@@ -436,6 +440,21 @@ class InputModel {
   double _trackpadSpeedInner = kDefaultTrackpadSpeed / 100.0;
   var _trackpadScrollUnsent = Offset.zero;
 
+  // Wheel speed ratio (multiplier applied to the quantized wheel delta).
+  // 1.0 reproduces the original behavior. Fractional remainders of the
+  // multiplied delta are accumulated so that small scroll steps are not
+  // completely lost by integer quantization.
+  double _wheelSpeed = kDefaultWheelSpeed;
+  double _wheelScrollUnsentX = 0.0;
+  double _wheelScrollUnsentY = 0.0;
+
+  // Gesture scroll (two-finger / three-finger remote scroll on mobile).
+  // Independent from `_wheelSpeed` (PC/Mac wheel-speed): `_scrollGesture`
+  // selects the active gesture (`twoFinger` default / `threeFinger` legacy),
+  // `_scrollSpeed` is the scroll speed ratio (0.25 .. 1.50, default 0.75).
+  String _scrollGesture = kScrollGestureTwoFinger;
+  double _scrollSpeed = kDefaultScrollSpeed;
+
   // Mobile relative mouse delta accumulators (for slow/fine movements).
   double _mobileDeltaRemainderX = 0.0;
   double _mobileDeltaRemainderY = 0.0;
@@ -487,6 +506,11 @@ class InputModel {
   double get devicePixelRatio => parent.target!.canvasModel.devicePixelRatio;
   bool get isViewCamera => parent.target!.connType == ConnType.viewCamera;
   int get trackpadSpeed => _trackpadSpeed;
+  double get wheelSpeed => _wheelSpeed;
+  String get scrollGesture => _scrollGesture;
+  double get scrollSpeed => _scrollSpeed;
+  bool get isScrollGestureTwoFinger =>
+      _scrollGesture == kScrollGestureTwoFinger;
   bool get useEdgeScroll =>
       parent.target!.canvasModel.scrollStyle == ScrollStyle.scrolledge;
 
@@ -496,6 +520,8 @@ class InputModel {
   InputModel(this.parent) {
     initSideButtonChannel();
     sessionId = parent.target!.sessionId;
+    updateWheelSpeed();
+    updateScrollSettings();
     _relativeMouse = RelativeMouseModel(
       sessionId: sessionId,
       enabled: relativeMouseMode,
@@ -616,6 +642,53 @@ class InputModel {
       _trackpadSpeed = kDefaultTrackpadSpeed;
     }
     _trackpadSpeedInner = _trackpadSpeed / 100.0;
+  }
+
+  /// Updates the wheel speed ratio from the global user default option.
+  ///
+  /// The stored value is a string parseable to a double within
+  /// [kMinWheelSpeed]..[kMaxWheelSpeed]. If parsing fails or the value is out
+  /// of bounds, the ratio falls back to [kDefaultWheelSpeed] so the app never
+  /// crashes and behaves like the original when no/old config exists.
+  void updateWheelSpeed() {
+    final raw = bind.mainGetUserDefaultOption(key: kKeyWheelSpeed);
+    final parsed = double.tryParse(raw);
+    if (parsed != null &&
+        parsed >= kMinWheelSpeed &&
+        parsed <= kMaxWheelSpeed) {
+      _wheelSpeed = parsed;
+    } else {
+      _wheelSpeed = kDefaultWheelSpeed;
+    }
+    _wheelScrollUnsentX = 0.0;
+    _wheelScrollUnsentY = 0.0;
+  }
+
+  /// Updates the gesture scroll settings (two/three-finger scroll and its
+  /// speed) from the global user default options.
+  ///
+  /// - `scroll-gesture`: `twoFinger` (default) or `threeFinger`.
+  /// - `scroll-speed`: ratio within [kMinScrollSpeed]..[kMaxScrollSpeed],
+  ///   default [kDefaultScrollSpeed].
+  /// Both are independent from `wheel-speed` (PC/Mac wheel speed).
+  /// Invalid/missing values fall back to the defaults so the app never
+  /// crashes and behaves like the original when no/old config exists.
+  void updateScrollSettings() {
+    final rawGesture = bind.mainGetUserDefaultOption(key: kKeyScrollGesture);
+    if (rawGesture == kScrollGestureThreeFinger) {
+      _scrollGesture = kScrollGestureThreeFinger;
+    } else {
+      _scrollGesture = kScrollGestureTwoFinger;
+    }
+    final rawSpeed = bind.mainGetUserDefaultOption(key: kKeyScrollSpeed);
+    final parsed = double.tryParse(rawSpeed);
+    if (parsed != null &&
+        parsed >= kMinScrollSpeed &&
+        parsed <= kMaxScrollSpeed) {
+      _scrollSpeed = parsed;
+    } else {
+      _scrollSpeed = kDefaultScrollSpeed;
+    }
   }
 
   void handleKeyDownEventModifiers(KeyEvent e) {
@@ -1660,7 +1733,8 @@ class InputModel {
     if (e is PointerScrollEvent) {
       final rawDx = e.scrollDelta.dx;
       final rawDy = e.scrollDelta.dy;
-      final dominantDelta = rawDx.abs() > rawDy.abs() ? rawDx.abs() : rawDy.abs();
+      final dominantDelta =
+          rawDx.abs() > rawDy.abs() ? rawDx.abs() : rawDy.abs();
       final isSmooth = dominantDelta < 1;
       final nowUs = DateTime.now().microsecondsSinceEpoch;
       final dtUs = _lastWheelTsUs == 0 ? 0 : nowUs - _lastWheelTsUs;
@@ -1697,9 +1771,28 @@ class InputModel {
       } else if (dy < 0) {
         dy = accel;
       }
-      bind.sessionSendMouse(
-          sessionId: sessionId,
-          msg: '{"type": "wheel", "x": "$dx", "y": "$dy"}');
+      if (_wheelSpeed == 1.0) {
+        // 100%: byte-for-byte original behavior.
+        bind.sessionSendMouse(
+            sessionId: sessionId,
+            msg: '{"type": "wheel", "x": "$dx", "y": "$dy"}');
+      } else {
+        // Apply the wheel-speed ratio with fractional accumulation so that
+        // small deltas are not lost to rounding (e.g. 1 * 0.25 would vanish).
+        // Only the integer part is sent; the remainder is kept for the next
+        // event.
+        _wheelScrollUnsentX += dx * _wheelSpeed;
+        _wheelScrollUnsentY += dy * _wheelSpeed;
+        final int outX = _wheelScrollUnsentX.truncate();
+        final int outY = _wheelScrollUnsentY.truncate();
+        _wheelScrollUnsentX -= outX.toDouble();
+        _wheelScrollUnsentY -= outY.toDouble();
+        if (outX != 0 || outY != 0) {
+          bind.sessionSendMouse(
+              sessionId: sessionId,
+              msg: '{"type": "wheel", "x": "$outX", "y": "$outY"}');
+        }
+      }
     }
   }
 

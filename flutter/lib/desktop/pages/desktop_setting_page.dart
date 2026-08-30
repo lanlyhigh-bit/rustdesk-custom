@@ -1846,6 +1846,7 @@ class _DisplayState extends State<_Display> {
       imageQuality(context),
       codec(context),
       if (isDesktop) trackpadSpeed(context),
+      if (isDesktop) wheelSpeed(context),
       if (!isWeb) privacyModeImpl(context),
       other(context),
     ]).marginOnly(bottom: _kListViewBottomMargin);
@@ -1974,6 +1975,42 @@ class _DisplayState extends State<_Display> {
         value: curSpeed,
         onDebouncer: onDebouncer,
       ),
+    ]);
+  }
+
+  Widget wheelSpeed(BuildContext context) {
+    final isOptFixed = isOptionFixed(kKeyWheelSpeed);
+    onChanged(String value) async {
+      await bind.mainSetUserDefaultOption(key: kKeyWheelSpeed, value: value);
+      setState(() {});
+    }
+
+    final raw = bind.mainGetUserDefaultOption(key: kKeyWheelSpeed);
+    final parsed = double.tryParse(raw);
+    final String groupValue = (parsed != null &&
+            parsed >= kMinWheelSpeed &&
+            parsed <= kMaxWheelSpeed)
+        ? raw
+        : kDefaultWheelSpeed.toString();
+
+    const options = <String>[
+      '0.25',
+      '0.50',
+      '0.75',
+      '1.00',
+      '1.25',
+      '1.50',
+    ];
+
+    return _Card(title: 'Default wheel speed', children: [
+      for (final v in options)
+        _Radio<String>(
+          context,
+          value: v,
+          groupValue: groupValue,
+          label: '${(double.parse(v) * 100).round()}%',
+          onChanged: isOptFixed ? null : onChanged,
+        ),
     ]);
   }
 

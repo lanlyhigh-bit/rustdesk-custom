@@ -708,6 +708,48 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
             },
     ));
 
+    // Remote scroll gesture: two-finger vertical scroll (default) or legacy
+    // three-finger scroll. Independent from PC/Mac wheel-speed.
+    enhancementsTiles.add(_getPopupDialogRadioEntry(
+      title: 'Remote scroll gesture',
+      list: [
+        _RadioEntry('Two-finger scroll', kScrollGestureTwoFinger),
+        _RadioEntry('Three-finger scroll', kScrollGestureThreeFinger),
+      ],
+      getter: () {
+        final raw = bind.mainGetUserDefaultOption(key: kKeyScrollGesture);
+        return raw == kScrollGestureThreeFinger
+            ? kScrollGestureThreeFinger
+            : kScrollGestureTwoFinger;
+      },
+      asyncSetter: (value) async {
+        await bind.mainSetUserDefaultOption(
+            key: kKeyScrollGesture, value: value);
+      },
+    ));
+
+    // Remote scroll speed ratio (25% .. 150%, default 75%).
+    enhancementsTiles.add(_getPopupDialogRadioEntry(
+      title: 'Remote scroll speed',
+      list: [
+        for (final v in const ['0.25', '0.50', '0.75', '1.00', '1.25', '1.50'])
+          _RadioEntry('${(double.parse(v) * 100).round()}%', v),
+      ],
+      getter: () {
+        final raw = bind.mainGetUserDefaultOption(key: kKeyScrollSpeed);
+        final parsed = double.tryParse(raw);
+        if (parsed != null &&
+            parsed >= kMinScrollSpeed &&
+            parsed <= kMaxScrollSpeed) {
+          return raw;
+        }
+        return kDefaultScrollSpeed.toStringAsFixed(2);
+      },
+      asyncSetter: (value) async {
+        await bind.mainSetUserDefaultOption(key: kKeyScrollSpeed, value: value);
+      },
+    ));
+
     final disabledSettings = bind.isDisableSettings();
     final hideSecuritySettings =
         bind.mainGetBuildinOption(key: kOptionHideSecuritySetting) == 'Y';

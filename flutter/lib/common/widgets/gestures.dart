@@ -6,9 +6,20 @@ import 'package:flutter_hbb/common/widgets/remote_input.dart';
 enum GestureState {
   none,
   oneFingerPan,
+  twoFingerPending,
+  twoFingerScroll,
   twoFingerScale,
   threeFingerVerticalDrag
 }
+
+// Two-finger gesture discrimination thresholds (gestures.dart).
+// `focalPointDelta` is expressed in logical pixels.
+// `scale` is a unitless ratio relative to the initial span (1.0 == no change).
+// Scale changes above the threshold win over scroll; otherwise a dominant
+// vertical focal-point movement above the threshold becomes a scroll.
+const double kTwoFingerScaleThreshold = 0.05;
+const double kTwoFingerScrollThreshold = 15.0;
+const double kTwoFingerDirectionRatio = 1.5;
 
 class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
   CustomTouchGestureRecognizer({
@@ -32,6 +43,21 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
   GestureScaleUpdateCallback? onTwoFingerScaleUpdate;
   GestureScaleEndCallback? onTwoFingerScaleEnd;
 
+  // twoFingerScroll : two-finger vertical drag as remote scroll
+  GestureDragStartCallback? onTwoFingerScrollStart;
+  GestureDragUpdateCallback? onTwoFingerScrollUpdate;
+  GestureDragEndCallback? onTwoFingerScrollEnd;
+
+  // When true (default), two fingers are discriminated between pinch-zoom and
+  // vertical scroll. When false (legacy "threeFinger" mode), two fingers always
+  // scale and three fingers scroll, matching the original behavior.
+  bool twoFingerScrollEnabled = true;
+
+  // Pending-state accumulators for two-finger discrimination.
+  double _twoFingerStartScale = 1.0;
+  double _twoFingerCumDx = 0.0;
+  double _twoFingerCumDy = 0.0;
+
   // threeFingerVerticalDrag
   GestureDragStartCallback? onThreeFingerVerticalDragStart;
   GestureDragUpdateCallback? onThreeFingerVerticalDragUpdate;
@@ -48,9 +74,15 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
       if (d.pointerCount == 1 && _currentState != GestureState.oneFingerPan) {
         onOneFingerStartDebounce(d);
       } else if (d.pointerCount == 2 &&
-          _currentState != GestureState.twoFingerScale) {
-        onTwoFingerStartDebounce(d);
+          _currentState != GestureState.twoFingerScale &&
+          _currentState != GestureState.twoFingerScroll) {
+        if (twoFingerScrollEnabled) {
+          _enterTwoFingerPending(d);
+        } else {
+          onTwoFingerStartDebounce(d);
+        }
       } else if (d.pointerCount == 3 &&
+          !twoFingerScrollEnabled &&
           _currentState != GestureState.threeFingerVerticalDrag) {
         _currentState = GestureState.threeFingerVerticalDrag;
         if (onThreeFingerVerticalDragStart != null) {
@@ -64,6 +96,14 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
           case GestureState.oneFingerPan:
             if (onOneFingerPanUpdate != null) {
               onOneFingerPanUpdate!(_getDragUpdateDetails(d));
+            }
+            break;
+          case GestureState.twoFingerPending:
+            _discriminateTwoFinger(d);
+            break;
+          case GestureState.twoFingerScroll:
+            if (onTwoFingerScrollUpdate != null) {
+              onTwoFingerScrollUpdate!(_getDragUpdateDetails(d));
             }
             break;
           case GestureState.twoFingerScale:
@@ -91,6 +131,16 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
           debugPrint("OneFingerState.pan onEnd");
           if (onOneFingerPanEnd != null) {
             onOneFingerPanEnd!(_getDragEndDetails(d));
+          }
+          break;
+        case GestureState.twoFingerPending:
+          // Never committed to either scale or scroll; just reset.
+          debugPrint("TwoFingerState.pending onEnd");
+          break;
+        case GestureState.twoFingerScroll:
+          debugPrint("TwoFingerState.scroll onEnd");
+          if (onTwoFingerScrollEnd != null) {
+            onTwoFingerScrollEnd!(_getDragEndDetails(d));
           }
           break;
         case GestureState.twoFingerScale:
@@ -162,6 +212,56 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
     }
   }
 
+  /// Enters the two-finger pending state and records the initial span ratio so
+  /// subsequent updates can be discriminated between pinch-zoom and vertical
+  /// scroll.
+  void _enterTwoFingerPending(ScaleUpdateDetails d) {
+    if (_currentState == GestureState.twoFingerPending) return;
+    _currentState = GestureState.twoFingerPending;
+    _twoFingerStartScale = d.scale;
+    _twoFingerCumDx = 0.0;
+    _twoFingerCumDy = 0.0;
+    debugPrint("start twoFingerPending");
+  }
+
+  /// Discriminates a pending two-finger gesture.
+  ///
+  /// Order of checks:
+  /// 1. If the span ratio deviates from the initial one beyond
+  ///    [kTwoFingerScaleThreshold], the gesture is committed to
+  ///    [GestureState.twoFingerScale] (pinch zoom keeps working exactly as
+  ///    before).
+  /// 2. Otherwise, once the cumulative focal-point movement is vertically
+  ///    dominant ([kTwoFingerDirectionRatio]) and exceeds
+  ///    [kTwoFingerScrollThreshold], the gesture is committed to
+  ///    [GestureState.twoFingerScroll] (remote scroll).
+  void _discriminateTwoFinger(ScaleUpdateDetails d) {
+    final scaleDelta = (d.scale - _twoFingerStartScale).abs();
+    _twoFingerCumDx += d.focalPointDelta.dx;
+    _twoFingerCumDy += d.focalPointDelta.dy;
+
+    if (scaleDelta > kTwoFingerScaleThreshold) {
+      _currentState = GestureState.twoFingerScale;
+      if (onTwoFingerScaleStart != null) {
+        onTwoFingerScaleStart!(ScaleStartDetails(
+            localFocalPoint: d.localFocalPoint, focalPoint: d.focalPoint));
+      }
+      debugPrint("twoFingerPending -> twoFingerScale");
+      return;
+    }
+
+    if (_twoFingerCumDy.abs() > kTwoFingerScrollThreshold &&
+        _twoFingerCumDy.abs() >
+            _twoFingerCumDx.abs() * kTwoFingerDirectionRatio) {
+      _currentState = GestureState.twoFingerScroll;
+      if (onTwoFingerScrollStart != null) {
+        onTwoFingerScrollStart!(DragStartDetails(
+            localPosition: d.localFocalPoint, globalPosition: d.focalPoint));
+      }
+      debugPrint("twoFingerPending -> twoFingerScroll");
+    }
+  }
+
   DragUpdateDetails _getDragUpdateDetails(ScaleUpdateDetails d) =>
       DragUpdateDetails(
           globalPosition: d.focalPoint,
@@ -179,6 +279,10 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
         if (onOneFingerPanCancel != null) {
           onOneFingerPanCancel!();
         }
+        break;
+      case GestureState.twoFingerPending:
+      case GestureState.twoFingerScroll:
+        // Reset scroll state if needed, currently self-contained
         break;
       case GestureState.twoFingerScale:
         // Reset scale state if needed, currently self-contained
