@@ -2,6 +2,11 @@ name: RustDesk Windows Custom Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/windows-build.yml'
 
 env:
   SCITER_RUST_VERSION: "1.75" # 与官方 CI 一致，sciter 依赖
