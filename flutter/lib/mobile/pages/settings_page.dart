@@ -711,10 +711,10 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
     // Remote scroll gesture: two-finger vertical scroll (default) or legacy
     // three-finger scroll. Independent from PC/Mac wheel-speed.
     enhancementsTiles.add(_getPopupDialogRadioEntry(
-      title: 'Remote scroll gesture',
+      title: '滚动手势',
       list: [
-        _RadioEntry('Two-finger scroll', kScrollGestureTwoFinger),
-        _RadioEntry('Three-finger scroll', kScrollGestureThreeFinger),
+        _RadioEntry('双指滚动', kScrollGestureTwoFinger),
+        _RadioEntry('三指滚动', kScrollGestureThreeFinger),
       ],
       getter: () {
         final raw = bind.mainGetUserDefaultOption(key: kKeyScrollGesture);
@@ -730,7 +730,7 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
 
     // Remote scroll speed ratio (25% .. 150%, default 75%).
     enhancementsTiles.add(_getPopupDialogRadioEntry(
-      title: 'Remote scroll speed',
+      title: '滚动速度',
       list: [
         for (final v in const ['0.25', '0.50', '0.75', '1.00', '1.25', '1.50'])
           _RadioEntry('${(double.parse(v) * 100).round()}%', v),

@@ -2002,7 +2002,7 @@ class _DisplayState extends State<_Display> {
       '1.50',
     ];
 
-    return _Card(title: 'Default wheel speed', children: [
+    return _Card(title: '默认滚轮速度', children: [
       for (final v in options)
         _Radio<String>(
           context,
