@@ -187,17 +187,21 @@ impl<T: InvokeUiSession> Remote<T> {
                 let is_secured = peer.is_secured();
                 self.handler
                     .set_connection_type(is_secured, direct, stream_type); // flutter -> connection_ready
-                if !is_secured
-                    && !crate::common::is_direct_ip_access(&self.handler.get_id())
-                    && !client::confirm_insecure_connection(&self.handler, &mut self.receiver).await
-                {
-                    self.send_close_reason(&mut peer, "").await;
-                    if kcp.is_some() {
-                        tokio::time::sleep(KCP_CLOSE_REASON_FLUSH_DELAY).await;
-                    }
-                    self.handle_disconnected(round);
-                    return;
-                }
+                // E2EE verification disabled: allow the connection to proceed directly
+                // even when the end-to-end encryption cannot be verified (is_secured == false),
+                // without showing the "Could not verify end-to-end encryption" confirmation dialog.
+                // Original logic (kept for rollback):
+                // if !is_secured
+                //     && !crate::common::is_direct_ip_access(&self.handler.get_id())
+                //     && !client::confirm_insecure_connection(&self.handler, &mut self.receiver).await
+                // {
+                //     self.send_close_reason(&mut peer, "").await;
+                //     if kcp.is_some() {
+                //         tokio::time::sleep(KCP_CLOSE_REASON_FLUSH_DELAY).await;
+                //     }
+                //     self.handle_disconnected(round);
+                //     return;
+                // }
                 self.handler.update_direct(Some(direct));
                 if conn_type == ConnType::DEFAULT_CONN || conn_type == ConnType::VIEW_CAMERA {
                     self.handler
