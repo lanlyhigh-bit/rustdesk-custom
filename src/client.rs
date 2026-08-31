@@ -415,7 +415,10 @@ impl Client {
         };
 
         let switch_code = interface.get_switch_code();
-        if !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
+        // [custom] 跳过强制 secure_tcp：登录(token)+自定义key 时用 get_rs_pk(key) 按 base64 公钥解析自定义字符串会失败，
+        // 导致 "invalid public key from rendezvous server"。改为登录后也走普通握手（与登出直连一致），自定义 key 照常可用。
+        // 原逻辑: if !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
+        if false && !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
             secure_tcp(&mut socket, &key)
                 .await
                 .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
@@ -847,7 +850,9 @@ impl Client {
                 .await
                 .with_context(|| "Failed to connect to rendezvous server")?;
 
-            if !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
+            // [custom] 同上一处：登录(token)+自定义key 时跳过强制 secure_tcp，走普通握手。
+            // 原逻辑: if !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
+            if false && !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
                 secure_tcp(&mut socket, key).await?;
             }
 
