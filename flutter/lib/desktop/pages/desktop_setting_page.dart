@@ -1994,12 +1994,11 @@ class _DisplayState extends State<_Display> {
         : kDefaultWheelSpeed.toString();
 
     const options = <String>[
+      '0.10',
       '0.25',
       '0.50',
       '0.75',
       '1.00',
-      '1.25',
-      '1.50',
     ];
 
     return _Card(title: '默认滚轮速度', children: [

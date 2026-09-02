@@ -285,9 +285,9 @@ const int kMaxTrackpadSpeed = 1000;
 
 // wheel speed (ratio multiplier for the normal mouse wheel, 1.0 = original behavior)
 const String kKeyWheelSpeed = 'wheel-speed';
-const double kMinWheelSpeed = 0.25;
-const double kDefaultWheelSpeed = 0.75;
-const double kMaxWheelSpeed = 1.50;
+const double kMinWheelSpeed = 0.10;
+const double kDefaultWheelSpeed = 1.00;
+const double kMaxWheelSpeed = 1.00;
 
 // scroll gesture mode (two-finger vertical drag as remote scroll, Android)
 // twoFinger = two-finger vertical drag scrolls, three fingers do nothing;
