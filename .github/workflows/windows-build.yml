@@ -152,15 +152,17 @@ jobs:
 
       - name: Pack portable single exe
         # 用官方 portable packer 把整理好的 rustdesk 目录（含 usbmmidd/打印机驱动）整体压成单个自解压 exe，双击即解压运行，无需安装
+        # 注意：Git Bash + Windows 原生 python 存在相对路径/cwd 传递坑（os.chdir('../rustdesk') 偶发 FileNotFoundError），全部用 $GITHUB_WORKSPACE 绝对路径
         shell: bash
         run: |
-          pip3 install -r libs/portable/requirements.txt
-          cd libs/portable
-          python3 generate.py -f ../rustdesk -o . -e ../rustdesk/rustdesk.exe -l 9
-          ls -lh target/release/rustdesk-portable-packer.exe
-          cd ../..
-          mkdir -p dist
-          cp libs/portable/target/release/rustdesk-portable-packer.exe dist/RustDesk-custom-x86_64-portable.exe
+          pip3 install -r "$GITHUB_WORKSPACE/libs/portable/requirements.txt"
+          cd "$GITHUB_WORKSPACE/libs/portable"
+          echo "cwd=$(pwd)"
+          ls -d "$GITHUB_WORKSPACE/rustdesk" || exit 1
+          python3 "$GITHUB_WORKSPACE/libs/portable/generate.py" -f "$GITHUB_WORKSPACE/rustdesk" -o "$GITHUB_WORKSPACE/libs/portable" -e "$GITHUB_WORKSPACE/rustdesk/rustdesk.exe" -l 9
+          ls -lh "$GITHUB_WORKSPACE/libs/portable/target/release/rustdesk-portable-packer.exe"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp "$GITHUB_WORKSPACE/libs/portable/target/release/rustdesk-portable-packer.exe" "$GITHUB_WORKSPACE/dist/RustDesk-custom-x86_64-portable.exe"
 
       - name: Upload portable single exe
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
