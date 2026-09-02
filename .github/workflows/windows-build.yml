@@ -150,8 +150,20 @@ jobs:
             cp $runner_res ./libs/portable/Runner.res;
           fi
 
-      - name: Upload unsigned portable
+      - name: Pack portable single exe
+        # 用官方 portable packer 把整理好的 rustdesk 目录（含 usbmmidd/打印机驱动）整体压成单个自解压 exe，双击即解压运行，无需安装
+        shell: bash
+        run: |
+          pip3 install -r libs/portable/requirements.txt
+          cd libs/portable
+          python3 generate.py -f ../rustdesk -o . -e ../rustdesk/rustdesk.exe -l 9
+          ls -lh target/release/rustdesk-portable-packer.exe
+          cd ../..
+          mkdir -p dist
+          cp libs/portable/target/release/rustdesk-portable-packer.exe dist/RustDesk-custom-x86_64-portable.exe
+
+      - name: Upload portable single exe
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: rustdesk-unsigned-windows-x86_64
-          path: rustdesk
+          name: rustdesk-custom-windows-x86_64-portable-exe
+          path: dist/RustDesk-custom-x86_64-portable.exe
