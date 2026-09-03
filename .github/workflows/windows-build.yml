@@ -152,26 +152,26 @@ jobs:
 
       - name: Pack portable single exe
         # 用官方 portable packer 把整理好的 rustdesk 目录（含 usbmmidd/打印机驱动）整体压成单个自解压 exe，双击即解压运行，无需安装
-        # 注意：$GITHUB_WORKSPACE 在 Windows runner 上是反斜杠盘符路径（D:\a\...），Git Bash 的 ls/cp 无法解析"反斜杠盘符+正斜杠"混合路径，
-        # 但 Windows 原生 python 可以。因此 python 侧用 $GITHUB_WORKSPACE，bash 命令（ls/cp/mkdir）统一转成正斜杠盘符形式 $WS。
-        shell: bash
+        # 踩坑修复：① libs/portable 属于仓库根 workspace，cargo 默认 target 会落到 workspace 根（位置不直观、易找错）；
+        # ② Git Bash 对 Windows 反斜杠盘符路径（$GITHUB_WORKSPACE）兼容性差，ls/find 偶发找不到。因此改用 PowerShell：
+        #    用 CARGO_TARGET_DIR 显式钉死 packer 产物到 libs\portable\target\release，cp/find 全走 Windows 原生命令。
+        shell: powershell
         run: |
-          WS="${GITHUB_WORKSPACE//\\//}"
-          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
-          echo "WS=$WS"
-          pip3 install -r "$WS/libs/portable/requirements.txt"
-          cd "$WS/libs/portable"
-          echo "cwd=$(pwd)"
-          ls -d "$WS/rustdesk" || exit 1
-          python3 "$GITHUB_WORKSPACE/libs/portable/generate.py" -f "$GITHUB_WORKSPACE/rustdesk" -o "$GITHUB_WORKSPACE/libs/portable" -e "$GITHUB_WORKSPACE/rustdesk/rustdesk.exe" -l 9
-          # libs/portable 是仓库根 workspace 的成员，cargo build 的 target 实际落在 workspace 根（$WS/target/release），
-          # 不是 libs/portable/target/release。用 find 同时兜底两个位置，避免再次猜错目录。
-          PACKER="$(find "$WS/target" "$WS/libs/portable/target" -name 'rustdesk-portable-packer.exe' 2>/dev/null | head -1)"
-          echo "PACKER=$PACKER"
-          [ -n "$PACKER" ] || { echo "rustdesk-portable-packer.exe not found"; exit 1; }
-          ls -lh "$PACKER"
-          mkdir -p "$WS/dist"
-          cp "$PACKER" "$WS/dist/RustDesk-custom-x86_64-portable.exe"
+          $ws = $env:GITHUB_WORKSPACE
+          pip3 install -r "$ws\libs\portable\requirements.txt"
+          if (-not (Test-Path "$ws\rustdesk")) { Write-Error "rustdesk dir not found: $ws\rustdesk"; exit 1 }
+          $env:CARGO_TARGET_DIR = "$ws\libs\portable\target"
+          python3 "$ws\libs\portable\generate.py" -f "$ws\rustdesk" -o "$ws\libs\portable" -e "$ws\rustdesk\rustdesk.exe" -l 9
+          $packer = "$ws\libs\portable\target\release\rustdesk-portable-packer.exe"
+          if (-not (Test-Path $packer)) {
+            Write-Host "fixed path missing, searching recursively..."
+            $packer = (Get-ChildItem -Path $ws -Recurse -Filter "rustdesk-portable-packer.exe" -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName)
+          }
+          if (-not $packer) { Write-Error "rustdesk-portable-packer.exe not found"; exit 1 }
+          Write-Host "PACKER=$packer"
+          New-Item -ItemType Directory -Force -Path "$ws\dist" | Out-Null
+          Copy-Item -Force $packer "$ws\dist\RustDesk-custom-x86_64-portable.exe"
+          Get-Item "$ws\dist\RustDesk-custom-x86_64-portable.exe" | Select-Object FullName, Length
 
       - name: Upload portable single exe
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
