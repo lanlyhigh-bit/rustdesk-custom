@@ -5,8 +5,15 @@ on:
   push:
     branches:
       - master
+    # 之前只监听本文件，导致改代码后不会自动出包。现补上源码路径，
+    # 让 Rust 核心 / Flutter 层 / 子模块的改动也能触发 Windows 构建。
     paths:
       - '.github/workflows/windows-build.yml'
+      - 'src/**'
+      - 'libs/**'
+      - 'flutter/lib/**'
+      - 'flutter/pubspec.yaml'
+      - 'Cargo.toml'
 
 env:
   SCITER_RUST_VERSION: "1.75" # 与官方 CI 一致，sciter 依赖

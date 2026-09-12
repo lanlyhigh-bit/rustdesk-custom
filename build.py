@@ -907,6 +907,13 @@ def build_flutter_dmg(version, features):
     system2(
         f'FLUTTER_XCODE_ARCHS={mac_arch} FLUTTER_XCODE_ONLY_ACTIVE_ARCH=YES flutter build macos --release')
     system2('cp -rf ../target/release/service ./build/macos/Build/Products/Release/RustDesk.app/Contents/MacOS/')
+    # flutter 3.24.x + Xcode 26 sign the main binary and bundled frameworks with
+    # different ad-hoc identities, which macOS 26 dyld rejects at launch with
+    # "mapping process and mapped file (non-platform) have different Team IDs".
+    # Re-sign the whole bundle with a single ad-hoc identity so every component
+    # matches and the app can actually start.
+    system2(
+        'codesign --force --deep --sign - --entitlements macos/Runner/Release.entitlements --timestamp=none ./build/macos/Build/Products/Release/RustDesk.app')
     '''
     system2(
         "create-dmg --volname \"RustDesk Installer\" --window-pos 200 120 --window-size 800 400 --icon-size 100 --app-drop-link 600 185 --icon RustDesk.app 200 190 --hide-extension RustDesk.app rustdesk.dmg ./build/macos/Build/Products/Release/RustDesk.app")

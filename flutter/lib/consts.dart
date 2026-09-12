@@ -302,6 +302,45 @@ const double kMinScrollSpeed = 0.25;
 const double kDefaultScrollSpeed = 0.75;
 const double kMaxScrollSpeed = 1.50;
 
+/// The speed steps offered for [kKeyScrollSpeed], as the raw option strings.
+///
+/// Shared by the settings page and the in-session picker so the two cannot
+/// drift apart.
+const List<String> kScrollSpeedOptions = [
+  '0.25',
+  '0.50',
+  '0.75',
+  '1.00',
+  '1.25',
+  '1.50',
+];
+
+/// The speed given by a raw option value, falling back to the default when the
+/// stored value is missing or out of range.
+double parseScrollSpeed(String raw) {
+  final parsed = double.tryParse(raw);
+  if (parsed != null &&
+      parsed >= kMinScrollSpeed &&
+      parsed <= kMaxScrollSpeed) {
+    return parsed;
+  }
+  return kDefaultScrollSpeed;
+}
+
+// Revision counter for the wheel / scroll user options above.
+//
+// A running session compares this against the revision it last synced and
+// re-reads the options on the fly, so changing e.g. the wheel speed or the
+// scroll gesture in the settings page takes effect immediately instead of
+// requiring a reconnect. A plain counter is used on purpose: the alternative
+// (every session subscribing to a global notifier) would keep disposed session
+// models alive and leak.
+int gScrollOptionsRevision = 0;
+
+/// Marks the wheel / scroll user options as changed. Called by the settings
+/// pages after writing the option, so live sessions pick the new value up.
+void markScrollOptionsChanged() => gScrollOptionsRevision++;
+
 // relative mouse mode
 /// Throttle duration (in milliseconds) for updating pointer lock center during
 /// window move/resize events. Lower values provide more responsive updates but

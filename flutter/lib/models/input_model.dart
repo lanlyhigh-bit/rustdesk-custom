@@ -455,6 +455,11 @@ class InputModel {
   String _scrollGesture = kScrollGestureTwoFinger;
   double _scrollSpeed = kDefaultScrollSpeed;
 
+  // Revision of the wheel / scroll options this model last read. Checked on the
+  // scroll hot paths so that a change made in the settings page applies to a
+  // running session immediately, without a reconnect.
+  int _scrollOptionsRevision = -1;
+
   // Mobile relative mouse delta accumulators (for slow/fine movements).
   double _mobileDeltaRemainderX = 0.0;
   double _mobileDeltaRemainderY = 0.0;
@@ -522,6 +527,7 @@ class InputModel {
     sessionId = parent.target!.sessionId;
     updateWheelSpeed();
     updateScrollSettings();
+    _scrollOptionsRevision = gScrollOptionsRevision;
     _relativeMouse = RelativeMouseModel(
       sessionId: sessionId,
       enabled: relativeMouseMode,
@@ -689,6 +695,18 @@ class InputModel {
     } else {
       _scrollSpeed = kDefaultScrollSpeed;
     }
+  }
+
+  /// Re-reads the wheel / scroll options if they changed since the last sync.
+  ///
+  /// Called on the scroll hot paths. The common case is a single int
+  /// comparison, so this is effectively free per event; only the first event
+  /// after a settings change pays for the two option reads.
+  void syncScrollOptionsIfNeeded() {
+    if (_scrollOptionsRevision == gScrollOptionsRevision) return;
+    _scrollOptionsRevision = gScrollOptionsRevision;
+    updateWheelSpeed();
+    updateScrollSettings();
   }
 
   void handleKeyDownEventModifiers(KeyEvent e) {
@@ -1731,6 +1749,8 @@ class InputModel {
     if (isViewOnly) return;
     if (isViewCamera) return;
     if (e is PointerScrollEvent) {
+      // Pick up a wheel-speed change made in the settings page while connected.
+      syncScrollOptionsIfNeeded();
       final rawDx = e.scrollDelta.dx;
       final rawDy = e.scrollDelta.dy;
       final dominantDelta =

@@ -58,3 +58,15 @@ libsciter.dylib
 flutter/web/
 # libdrmtap is cloned at build time by build.py (not a submodule)
 /third_party/libdrmtap/
+# local build outputs and logs
+/RustDesk.app/
+*.log
+# 交付用的安装包放在仓库根目录，不进版本库
+/*.apk
+/*.dmg
+/*.zip
+# 本机专用的构建环境与交叉编译产物（含绝对路径，换机器需重建）
+/build_env.sh
+/android_libsodium/
+# 项目工作记忆，仅本机保留
+/.workbuddy/

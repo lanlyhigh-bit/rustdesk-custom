@@ -711,10 +711,10 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
     // Remote scroll gesture: two-finger vertical scroll (default) or legacy
     // three-finger scroll. Independent from PC/Mac wheel-speed.
     enhancementsTiles.add(_getPopupDialogRadioEntry(
-      title: '滚动手势',
+      title: translate('Scroll Gesture'),
       list: [
-        _RadioEntry('双指滚动', kScrollGestureTwoFinger),
-        _RadioEntry('三指滚动', kScrollGestureThreeFinger),
+        _RadioEntry(translate('Two-Finger Scroll'), kScrollGestureTwoFinger),
+        _RadioEntry(translate('Three-Finger Scroll'), kScrollGestureThreeFinger),
       ],
       getter: () {
         final raw = bind.mainGetUserDefaultOption(key: kKeyScrollGesture);
@@ -725,14 +725,16 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       asyncSetter: (value) async {
         await bind.mainSetUserDefaultOption(
             key: kKeyScrollGesture, value: value);
+        // Let running sessions pick the new gesture up without a reconnect.
+        markScrollOptionsChanged();
       },
     ));
 
     // Remote scroll speed ratio (25% .. 150%, default 75%).
     enhancementsTiles.add(_getPopupDialogRadioEntry(
-      title: '滚动速度',
+      title: translate('Scroll Speed'),
       list: [
-        for (final v in const ['0.25', '0.50', '0.75', '1.00', '1.25', '1.50'])
+        for (final v in kScrollSpeedOptions)
           _RadioEntry('${(double.parse(v) * 100).round()}%', v),
       ],
       getter: () {
@@ -747,6 +749,8 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
       },
       asyncSetter: (value) async {
         await bind.mainSetUserDefaultOption(key: kKeyScrollSpeed, value: value);
+        // Let running sessions pick the new speed up without a reconnect.
+        markScrollOptionsChanged();
       },
     ));
 

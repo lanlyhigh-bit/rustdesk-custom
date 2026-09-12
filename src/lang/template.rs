@@ -257,6 +257,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Mouse Drag", ""),
         ("Three-Finger vertically", ""),
         ("Mouse Wheel", ""),
+        ("Wheel Speed", ""),
+        ("Scroll Gesture", ""),
+        ("Two-Finger Scroll", ""),
+        ("Three-Finger Scroll", ""),
+        ("Scroll Speed", ""),
+        ("Two-Finger vertically", ""),
         ("Two-Finger Move", ""),
         ("Canvas Move", ""),
         ("Pinch to Zoom", ""),
@@ -758,5 +764,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Continue", ""),
         ("Browser didn't open? Use the url below to sign in.", ""),
         ("Lock canvas", ""),
+        ("Drop here to send to desktop", ""),
     ].iter().cloned().collect();
 }

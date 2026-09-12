@@ -46,6 +46,6 @@
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
     <key>LSUIElement</key>
-    <string>0</string>
+    <string>1</string>
 </dict>
 </plist>

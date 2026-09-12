@@ -765,12 +765,61 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     ];
   }
 
+  /// Menu entry for the remote scroll speed, labelled with the current value.
+  TTextMenu _scrollSpeedMenu() {
+    final current =
+        parseScrollSpeed(bind.mainGetUserDefaultOption(key: kKeyScrollSpeed));
+    return TTextMenu(
+      child:
+          Text('${translate('Scroll Speed')} · ${(current * 100).round()}%'),
+      onPressed: _showScrollSpeedPicker,
+    );
+  }
+
+  /// Picks the remote scroll speed without leaving the session.
+  ///
+  /// Writes the same user option the settings page writes and bumps
+  /// [gScrollOptionsRevision], so the running session re-reads it on the next
+  /// scroll event instead of requiring a reconnect.
+  void _showScrollSpeedPicker() {
+    gFFI.dialogManager.show((setState, close, context) {
+      final groupValue =
+          parseScrollSpeed(bind.mainGetUserDefaultOption(key: kKeyScrollSpeed))
+              .toStringAsFixed(2)
+              .obs;
+      return CustomAlertDialog(
+        content: Obx(() => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (final v in kScrollSpeedOptions)
+                getRadio<String>(
+                    Text('${(double.parse(v) * 100).round()}%'),
+                    v,
+                    groupValue.value,
+                    (value) async {
+                      if (value == null) return;
+                      await bind.mainSetUserDefaultOption(
+                          key: kKeyScrollSpeed, value: value);
+                      markScrollOptionsChanged();
+                      groupValue.value = value;
+                      close();
+                    }),
+            ])),
+      );
+    }, clickMaskDismiss: true, backDismiss: true);
+  }
+
   void showActions(String id) async {
     final size = MediaQuery.of(context).size;
     final x = 120.0;
     final y = size.height;
     final mobileActionMenus = _getMobileActionMenus();
     final menus = toolbarControls(context, id, gFFI);
+    // The scroll speed otherwise only lives in the settings page, which is a
+    // home-page tab and therefore out of reach while a session is up (pressing
+    // back closes the session). Surface it here so it can be changed without
+    // disconnecting.
+    menus.insert(0, _scrollSpeedMenu());
 
     final List<PopupMenuEntry<int>> more = [
       ...mobileActionMenus

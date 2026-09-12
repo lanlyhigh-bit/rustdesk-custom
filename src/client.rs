@@ -38,6 +38,13 @@ use crate::{
 };
 #[cfg(feature = "unix-file-copy-paste")]
 use crate::{clipboard::check_clipboard_files, clipboard_file::unix_file_clip};
+
+/// [custom] 跳过"登录(token) + 自定义 key"场景下的强制 `secure_tcp` 握手。
+///
+/// 原因：自建服务器使用非 base64 的自定义 key 时，`get_rs_pk(key)` 会把它当成公钥解析并失败，
+/// 连接报 `invalid public key from rendezvous server` 而无法建立。
+/// 当前取值保持既有行为不变；改为 `false` 即可一行回滚到官方逻辑。
+const CUSTOM_SKIP_SECURE_TCP_ON_LOGIN: bool = true;
 pub use file_trait::FileManager;
 #[cfg(not(feature = "flutter"))]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -415,10 +422,12 @@ impl Client {
         };
 
         let switch_code = interface.get_switch_code();
-        // [custom] 跳过强制 secure_tcp：登录(token)+自定义key 时用 get_rs_pk(key) 按 base64 公钥解析自定义字符串会失败，
-        // 导致 "invalid public key from rendezvous server"。改为登录后也走普通握手（与登出直连一致），自定义 key 照常可用。
-        // 原逻辑: if !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
-        if false && !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
+        // [custom] 详见 CUSTOM_SKIP_SECURE_TCP_ON_LOGIN 的说明。
+        // 官方原条件: !key.is_empty() && (!token.is_empty() || !switch_code.is_empty())
+        if !CUSTOM_SKIP_SECURE_TCP_ON_LOGIN
+            && !key.is_empty()
+            && (!token.is_empty() || !switch_code.is_empty())
+        {
             secure_tcp(&mut socket, &key)
                 .await
                 .map_err(|e| anyhow!("Failed to secure tcp: {}", e))?;
@@ -850,9 +859,12 @@ impl Client {
                 .await
                 .with_context(|| "Failed to connect to rendezvous server")?;
 
-            // [custom] 同上一处：登录(token)+自定义key 时跳过强制 secure_tcp，走普通握手。
-            // 原逻辑: if !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
-            if false && !key.is_empty() && (!token.is_empty() || !switch_code.is_empty()) {
+            // [custom] 同上，详见 CUSTOM_SKIP_SECURE_TCP_ON_LOGIN。
+            // 官方原条件: !key.is_empty() && (!token.is_empty() || !switch_code.is_empty())
+            if !CUSTOM_SKIP_SECURE_TCP_ON_LOGIN
+                && !key.is_empty()
+                && (!token.is_empty() || !switch_code.is_empty())
+            {
                 secure_tcp(&mut socket, key).await?;
             }
 

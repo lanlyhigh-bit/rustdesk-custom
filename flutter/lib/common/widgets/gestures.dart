@@ -21,6 +21,12 @@ const double kTwoFingerScaleThreshold = 0.05;
 const double kTwoFingerScrollThreshold = 15.0;
 const double kTwoFingerDirectionRatio = 1.5;
 
+// Total focal-point travel (|dx| + |dy|) after which a two-finger gesture that
+// never became clearly vertical or clearly horizontal is committed to pan.
+// Without this fallback a slow or diagonal drag stayed in `twoFingerPending`
+// forever and the canvas could not be moved at all.
+const double kTwoFingerPanFallbackThreshold = 50.0;
+
 class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
   CustomTouchGestureRecognizer({
     Object? debugOwner,
@@ -235,21 +241,23 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
   ///    dominant ([kTwoFingerDirectionRatio]) and exceeds
   ///    [kTwoFingerScrollThreshold], the gesture is committed to
   ///    [GestureState.twoFingerScroll] (remote scroll).
+  /// 3. If it is horizontally dominant instead, the gesture is committed to
+  ///    [GestureState.twoFingerScale] so the canvas pans horizontally.
+  /// 4. A drag that satisfies neither dominance test is committed to
+  ///    [GestureState.twoFingerScale] once its total travel exceeds
+  ///    [kTwoFingerPanFallbackThreshold], so no two-finger drag is a no-op.
   void _discriminateTwoFinger(ScaleUpdateDetails d) {
     final scaleDelta = (d.scale - _twoFingerStartScale).abs();
     _twoFingerCumDx += d.focalPointDelta.dx;
     _twoFingerCumDy += d.focalPointDelta.dy;
 
+    // 1. Span changed -> pinch zoom.
     if (scaleDelta > kTwoFingerScaleThreshold) {
-      _currentState = GestureState.twoFingerScale;
-      if (onTwoFingerScaleStart != null) {
-        onTwoFingerScaleStart!(ScaleStartDetails(
-            localFocalPoint: d.localFocalPoint, focalPoint: d.focalPoint));
-      }
-      debugPrint("twoFingerPending -> twoFingerScale");
+      _commitTwoFingerScale(d);
       return;
     }
 
+    // 2. Vertically dominant -> remote scroll. Kept exactly as before.
     if (_twoFingerCumDy.abs() > kTwoFingerScrollThreshold &&
         _twoFingerCumDy.abs() >
             _twoFingerCumDx.abs() * kTwoFingerDirectionRatio) {
@@ -259,7 +267,41 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
             localPosition: d.localFocalPoint, globalPosition: d.focalPoint));
       }
       debugPrint("twoFingerPending -> twoFingerScroll");
+      return;
     }
+
+    // 3. Horizontally dominant -> local pan. A parallel two-finger drag keeps
+    //    the span constant, so test 1 never fires and test 2 never fires
+    //    either: without this branch the gesture stayed pending forever and
+    //    panX/panY were never applied, i.e. the canvas could not be moved
+    //    after zooming in.
+    if (_twoFingerCumDx.abs() > kTwoFingerScrollThreshold &&
+        _twoFingerCumDx.abs() >
+            _twoFingerCumDy.abs() * kTwoFingerDirectionRatio) {
+      _commitTwoFingerScale(d);
+      return;
+    }
+
+    // 4. Slow or diagonal drag that never clearly matched either axis: commit
+    //    to pan instead of swallowing the gesture.
+    if (_twoFingerCumDx.abs() + _twoFingerCumDy.abs() >
+        kTwoFingerPanFallbackThreshold) {
+      _commitTwoFingerScale(d);
+    }
+  }
+
+  /// Commits a pending two-finger gesture to [GestureState.twoFingerScale].
+  ///
+  /// That is the only state in which the canvas pan callbacks (`panX`/`panY`)
+  /// are invoked, so both horizontal dragging and the undecided fallback go
+  /// through here.
+  void _commitTwoFingerScale(ScaleUpdateDetails d) {
+    _currentState = GestureState.twoFingerScale;
+    if (onTwoFingerScaleStart != null) {
+      onTwoFingerScaleStart!(ScaleStartDetails(
+          localFocalPoint: d.localFocalPoint, focalPoint: d.focalPoint));
+    }
+    debugPrint("twoFingerPending -> twoFingerScale");
   }
 
   DragUpdateDetails _getDragUpdateDetails(ScaleUpdateDetails d) =>

@@ -20,6 +20,7 @@ import '../../models/platform_model.dart';
 import '../../common/shared_state.dart';
 import '../../utils/image.dart';
 import '../widgets/remote_toolbar.dart';
+import '../widgets/remote_drop_zone.dart';
 import '../widgets/kb_layout_type_chooser.dart';
 import '../widgets/tabbar_widget.dart';
 import 'macos_full_screen_focus_recovery.dart';
@@ -996,8 +997,12 @@ class _RemotePageState extends State<RemotePage>
             QualityMonitor(_ffi.qualityMonitorModel), null, null),
       ),
     );
-    return Stack(
-      children: paints,
+    return RemoteDropZone(
+      sessionId: sessionId,
+      enabled: !_ffi.ffiModel.viewOnly && !_ffi.ffiModel.isPeerAndroid,
+      child: Stack(
+        children: paints,
+      ),
     );
   }
 

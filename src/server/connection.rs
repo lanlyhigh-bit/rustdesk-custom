@@ -103,6 +103,43 @@ lazy_static::lazy_static! {
 #[cfg(target_os = "windows")]
 const TERMINAL_OS_LOGIN_FAILED_MSG: &str = "Incorrect username or password.";
 
+/// Custom: accepts an uploaded file in a normal remote-control session, so that dropping a file
+/// onto the remote screen works without opening a dedicated file-transfer connection.
+///
+/// Only `Receive` is allow-listed (see the `FileAction` arm below); delete / rename / create
+/// still require that connection. Set to `false` to restore upstream behaviour.
+const CUSTOM_ALLOW_DROP_IN_REMOTE_SESSION: bool = true;
+
+/// Custom: pseudo-directory used by the custom drag-and-drop upload.
+///
+/// The controlling side cannot know the controlled side's real desktop path, so it sends
+/// `$DESKTOP$/name` and the real path is resolved here. Any path without the prefix is returned
+/// unchanged, which keeps the stock file-transfer flow a no-op.
+const CUSTOM_DROP_DESKTOP_PREFIX: &str = "$DESKTOP$";
+
+/// Custom: real desktop directory of the controlled machine.
+///
+/// Uses the platform's known-folder API rather than a literal `<home>/Desktop`, because Windows
+/// desktops are routinely redirected (OneDrive "Back up folders") and a literal path would quietly
+/// drop the file into an invisible `C:\Users\x\Desktop` that Explorer never shows. This is the same
+/// primitive `ui_interface` already uses for its own desktop lookups. Falls back to `<home>/Desktop`
+/// when the platform has no notion of a desktop folder (or none exists yet).
+fn custom_desktop_dir() -> std::path::PathBuf {
+    hbb_common::directories_next::UserDirs::new()
+        .and_then(|user| user.desktop_dir().map(|p| p.to_path_buf()))
+        .unwrap_or_else(|| Config::get_home().join("Desktop"))
+}
+
+fn resolve_custom_drop_path(path: &str) -> String {
+    if let Some(rest) = path.strip_prefix(CUSTOM_DROP_DESKTOP_PREFIX) {
+        return custom_desktop_dir()
+            .join(rest.trim_start_matches(['/', '\\']))
+            .to_string_lossy()
+            .into_owned();
+    }
+    path.to_owned()
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -3280,6 +3317,11 @@ impl Connection {
                             }
                         }
                     }
+                    if !handle_fa && CUSTOM_ALLOW_DROP_IN_REMOTE_SESSION {
+                        if let Some(file_action::Union::Receive(_)) = fa.union.as_ref() {
+                            handle_fa = true;
+                        }
+                    }
                     if handle_fa {
                         if self.delayed_read_dir.is_some() {
                             if let Some(file_action::Union::ReadDir(rd)) = fa.union {
@@ -3427,8 +3469,9 @@ impl Connection {
                                 let od = can_enable_overwrite_detection(get_version_number(
                                     &self.lr.version,
                                 ));
+                                let drop_target = resolve_custom_drop_path(&r.path);
                                 self.send_fs(ipc::FS::NewWrite {
-                                    path: r.path.clone(),
+                                    path: drop_target.clone(),
                                     id: r.id,
                                     file_num: r.file_num,
                                     files: r
@@ -3443,7 +3486,7 @@ impl Connection {
                                 });
                                 self.post_file_audit(
                                     FileAuditType::RemoteReceive,
-                                    &r.path,
+                                    &drop_target,
                                     Self::get_files_for_audit(fs::JobType::Generic, r.files),
                                     json!({}),
                                 );

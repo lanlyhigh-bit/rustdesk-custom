@@ -102,6 +102,13 @@ android {
         targetSdkVersion 33
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
+
+        // 个人定制版只发布 arm64-v8a。
+        // Rust 核心只交叉编译了 aarch64，其它 ABI 目录里没有 librustdesk.so，
+        // 装到这些设备上会在启动时抛 UnsatisfiedLinkError 闪退，同时还白占约 20MB 体积。
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
     }
 
     signingConfigs {

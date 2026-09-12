@@ -15,6 +15,11 @@ use crate::{
 // Restart msgbox text is kept as a legacy UI fallback; Flutter handles the type as a control event.
 const RESTART_REMOTE_DEVICE_NO_DATA_TIMEOUT: Duration = Duration::from_secs(5);
 const KCP_CLOSE_REASON_FLUSH_DELAY: Duration = Duration::from_millis(30);
+
+/// [custom] 关闭"无法验证端到端加密"时的确认弹窗：即使 `is_secured == false` 也直接建立连接。
+///
+/// 当前取值保持既有行为不变；改为 `false` 即可一行回滚到官方的确认流程。
+const CUSTOM_SKIP_INSECURE_CONNECTION_CONFIRM: bool = true;
 #[cfg(feature = "unix-file-copy-paste")]
 use crate::{clipboard::try_empty_clipboard_files, clipboard_file::unix_file_clip};
 #[cfg(any(
@@ -187,21 +192,20 @@ impl<T: InvokeUiSession> Remote<T> {
                 let is_secured = peer.is_secured();
                 self.handler
                     .set_connection_type(is_secured, direct, stream_type); // flutter -> connection_ready
-                // E2EE verification disabled: allow the connection to proceed directly
-                // even when the end-to-end encryption cannot be verified (is_secured == false),
-                // without showing the "Could not verify end-to-end encryption" confirmation dialog.
-                // Original logic (kept for rollback):
-                // if !is_secured
-                //     && !crate::common::is_direct_ip_access(&self.handler.get_id())
-                //     && !client::confirm_insecure_connection(&self.handler, &mut self.receiver).await
-                // {
-                //     self.send_close_reason(&mut peer, "").await;
-                //     if kcp.is_some() {
-                //         tokio::time::sleep(KCP_CLOSE_REASON_FLUSH_DELAY).await;
-                //     }
-                //     self.handle_disconnected(round);
-                //     return;
-                // }
+                // [custom] 详见 CUSTOM_SKIP_INSECURE_CONNECTION_CONFIRM：
+                // 端到端加密无法验证时不再弹确认框，直接建立连接。
+                if !CUSTOM_SKIP_INSECURE_CONNECTION_CONFIRM
+                    && !is_secured
+                    && !crate::common::is_direct_ip_access(&self.handler.get_id())
+                    && !client::confirm_insecure_connection(&self.handler, &mut self.receiver).await
+                {
+                    self.send_close_reason(&mut peer, "").await;
+                    if kcp.is_some() {
+                        tokio::time::sleep(KCP_CLOSE_REASON_FLUSH_DELAY).await;
+                    }
+                    self.handle_disconnected(round);
+                    return;
+                }
                 self.handler.update_direct(Some(direct));
                 if conn_type == ConnType::DEFAULT_CONN || conn_type == ConnType::VIEW_CAMERA {
                     self.handler

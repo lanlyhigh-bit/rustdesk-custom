@@ -257,6 +257,12 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Mouse Drag", "鼠标选中拖动"),
         ("Three-Finger vertically", "三指垂直滑动"),
         ("Mouse Wheel", "鼠标滚轮"),
+        ("Wheel Speed", "滚轮速度"),
+        ("Scroll Gesture", "滚动手势"),
+        ("Two-Finger Scroll", "双指滚动"),
+        ("Three-Finger Scroll", "三指滚动"),
+        ("Scroll Speed", "滚动速度"),
+        ("Two-Finger vertically", "两指垂直滑动"),
         ("Two-Finger Move", "双指移动"),
         ("Canvas Move", "移动画布"),
         ("Pinch to Zoom", "双指缩放"),
@@ -758,5 +764,6 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Continue", "继续"),
         ("Browser didn't open? Use the url below to sign in.", "浏览器未打开？请使用下方网址登录。"),
         ("Lock canvas", "锁定画布"),
+        ("Drop here to send to desktop", "拖到此处发送到桌面"),
     ].iter().cloned().collect();
 }

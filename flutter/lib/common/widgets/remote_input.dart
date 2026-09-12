@@ -452,6 +452,13 @@ class _RawTouchGestureDetectorRegionState
     if (isNotTouchBasedDevice()) {
       return;
     }
+    if (!(isDesktop || isWebDesktop)) {
+      // Mobile: a fresh two-finger gesture must not inherit the span ratio of
+      // the previous one, otherwise the first update computes `d.scale / _scale`
+      // from a stale base and the canvas jumps. `onTwoFingerScaleEnd` only
+      // resets it on a normal end, not when the gesture is cancelled.
+      _scale = 1;
+    }
     if (isSpecialHoldDragActive) {
       // Initialize the last focal point to calculate deltas manually.
       _lastSpecialHoldDragFocalPoint = d.focalPoint;
@@ -525,6 +532,8 @@ class _RawTouchGestureDetectorRegionState
   /// ([inputModel.scrollSpeed], 0.25 .. 1.50). The fractional part is kept so
   /// that small movements at low speed still produce wheel events over time.
   void _accumulateGestureScroll(double dy) {
+    // Pick up a scroll-speed change made in the settings page while connected.
+    inputModel.syncScrollOptionsIfNeeded();
     _mouseScrollIntegral += dy / 4 * inputModel.scrollSpeed;
     final int steps = _mouseScrollIntegral.truncate();
     if (steps != 0) {
@@ -602,6 +611,10 @@ class _RawTouchGestureDetectorRegionState
       CustomTouchGestureRecognizer:
           GestureRecognizerFactoryWithHandlers<CustomTouchGestureRecognizer>(
               () => CustomTouchGestureRecognizer(), (instance) {
+        // Re-read the scroll options when the recognizers are (re)built, so
+        // switching two-finger / three-finger scroll takes effect without a
+        // reconnect.
+        inputModel.syncScrollOptionsIfNeeded();
         instance.onOneFingerPanStart =
             (DragStartDetails d) => onOneFingerPanStart(context, d);
         instance

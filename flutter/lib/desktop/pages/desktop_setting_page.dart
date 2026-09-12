@@ -1982,6 +1982,8 @@ class _DisplayState extends State<_Display> {
     final isOptFixed = isOptionFixed(kKeyWheelSpeed);
     onChanged(String value) async {
       await bind.mainSetUserDefaultOption(key: kKeyWheelSpeed, value: value);
+      // Let running sessions pick the new speed up without a reconnect.
+      markScrollOptionsChanged();
       setState(() {});
     }
 
@@ -2001,7 +2003,7 @@ class _DisplayState extends State<_Display> {
       '1.00',
     ];
 
-    return _Card(title: '默认滚轮速度', children: [
+    return _Card(title: translate('Wheel Speed'), children: [
       for (final v in options)
         _Radio<String>(
           context,
