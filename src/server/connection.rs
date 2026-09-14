@@ -3466,10 +3466,14 @@ impl Connection {
                                 // client to server
                                 // note: 1.1.10 introduced identical file detection, which breaks original logic of send/recv files
                                 // whenever got send/recv request, check peer version to ensure old version of rustdesk
+                                let drop_target = resolve_custom_drop_path(&r.path);
+                                // Custom: a drag-and-drop upload has no file-manager job behind it on the
+                                // controlling side, so `postOverrideFileConfirm` would drop the digest event
+                                // and the write job would stay `file_is_waiting` forever. Drops just replace.
+                                // Paths without the custom prefix keep the stock behaviour untouched.
                                 let od = can_enable_overwrite_detection(get_version_number(
                                     &self.lr.version,
-                                ));
-                                let drop_target = resolve_custom_drop_path(&r.path);
+                                )) && drop_target == r.path;
                                 self.send_fs(ipc::FS::NewWrite {
                                     path: drop_target.clone(),
                                     id: r.id,

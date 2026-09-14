@@ -35,6 +35,122 @@ class RelativeMouseState {
     private init() {}
 }
 
+/// Custom: a file drop target that binds to the window it is registered for.
+///
+/// `desktop_drop`'s macOS plugin hard-codes `NSApplication.shared.delegate.mainFlutterWindow`
+/// when it installs its `DropTarget` view, ignoring which registrar (i.e. which Flutter
+/// engine) is calling. RustDesk runs every remote session in its own window through
+/// `desktop_multi_window`, so the session window never received a drop target and dragging a
+/// local file onto the remote screen did absolutely nothing.
+///
+/// This view speaks the exact same `desktop_drop` method channel, but on the messenger of the
+/// engine that owns it, and it is added to that engine's own view — so the stock Dart
+/// `DropTarget` widget works unchanged, in the main window and in every session window alike.
+final class RustDeskWindowDropTarget: NSView {
+    private let channel: FlutterMethodChannel
+
+    init(frame frameRect: NSRect, channel: FlutterMethodChannel) {
+        self.channel = channel
+        super.init(frame: frameRect)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    static func register(with registrar: FlutterPluginRegistrar) {
+        guard let flutterView = registrar.view else { return }
+        let channel = FlutterMethodChannel(
+            name: "desktop_drop", binaryMessenger: registrar.messenger)
+        let target = RustDeskWindowDropTarget(frame: flutterView.bounds, channel: channel)
+        target.autoresizingMask = [.width, .height]
+        target.registerForDraggedTypes(
+            NSFilePromiseReceiver.readableDraggedTypes.map { NSPasteboard.PasteboardType($0) })
+        target.registerForDraggedTypes([NSPasteboard.PasteboardType.fileURL])
+        flutterView.addSubview(target)
+    }
+
+    /// Drag location in Flutter's coordinate space (origin top-left, logical points).
+    ///
+    /// `draggingLocation` is expressed in the destination window's coordinates, so convert it
+    /// into this view first — that stays correct even if the view is not the whole content view
+    /// — and only then flip the axis, because Flutter measures downwards.
+    private func flutterPoint(_ sender: NSDraggingInfo) -> [CGFloat] {
+        let p = convert(sender.draggingLocation, from: nil)
+        return [p.x, bounds.height - p.y]
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        channel.invokeMethod("entered", arguments: flutterPoint(sender))
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        channel.invokeMethod("updated", arguments: flutterPoint(sender))
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        channel.invokeMethod("exited", arguments: nil)
+    }
+
+    /// Directory URL used for accepting file promises.
+    private lazy var destinationURL: URL = {
+        let destinationURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("Drops")
+        try? FileManager.default.createDirectory(
+            at: destinationURL, withIntermediateDirectories: true, attributes: nil)
+        return destinationURL
+    }()
+
+    /// Queue used for reading and writing file promises.
+    private lazy var workQueue: OperationQueue = {
+        let providerQueue = OperationQueue()
+        providerQueue.qualityOfService = .userInitiated
+        return providerQueue
+    }()
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        var urls = [String]()
+
+        let searchOptions: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+        ]
+
+        let group = DispatchGroup()
+
+        // retrieve NSFilePromise.
+        sender.enumerateDraggingItems(
+            options: [], for: nil, classes: [NSFilePromiseReceiver.self, NSURL.self],
+            searchOptions: searchOptions
+        ) { draggingItem, _, _ in
+            switch draggingItem.item {
+            case let filePromiseReceiver as NSFilePromiseReceiver:
+                group.enter()
+                filePromiseReceiver.receivePromisedFiles(
+                    atDestination: self.destinationURL, options: [:],
+                    operationQueue: self.workQueue
+                ) { fileURL, error in
+                    if let error = error {
+                        debugPrint("error: \(error)")
+                    } else {
+                        urls.append(fileURL.path)
+                    }
+                    group.leave()
+                }
+            case let fileURL as URL:
+                urls.append(fileURL.path)
+            default: break
+            }
+        }
+
+        group.notify(queue: .main) {
+            self.channel.invokeMethod("performOperation", arguments: urls)
+        }
+        return true
+    }
+}
+
 class MainFlutterWindow: NSWindow {
     private static let fullscreenWorkAreaSizes = NSMapTable<NSWindow, NSValue>(
         keyOptions: [.weakMemory, .objectPointerPersonality],
@@ -73,7 +189,12 @@ class MainFlutterWindow: NSWindow {
             // DesktopLifecyclePlugin.register(with: controller.registrar(forPlugin: "DesktopLifecyclePlugin"))
             // Note: copy below from above RegisterGeneratedPlugins
             self.setMethodHandler(registrar: controller.registrar(forPlugin: "RustDeskPlugin"))
-            DesktopDropPlugin.register(with: controller.registrar(forPlugin: "DesktopDropPlugin"))
+            // Custom: `DesktopDropPlugin.register` ignores the registrar it is handed and
+            // attaches its drop target to `mainFlutterWindow` (see the plugin source), so
+            // registering it here would put a *second* target on the main window while the
+            // window being created still gets none. Use our own per-window target instead.
+            RustDeskWindowDropTarget.register(
+                with: controller.registrar(forPlugin: "RustDeskWindowDropTarget"))
             DeviceInfoPlusMacosPlugin.register(with: controller.registrar(forPlugin: "DeviceInfoPlusMacosPlugin"))
             FlutterCustomCursorPlugin.register(with: controller.registrar(forPlugin: "FlutterCustomCursorPlugin"))
             FPPPackageInfoPlusPlugin.register(with: controller.registrar(forPlugin: "FPPPackageInfoPlusPlugin"))

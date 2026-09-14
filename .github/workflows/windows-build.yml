@@ -12,6 +12,8 @@ on:
       - 'src/**'
       - 'libs/**'
       - 'flutter/lib/**'
+      - 'flutter/windows/**'
+      - 'flutter/macos/**'
       - 'flutter/pubspec.yaml'
       - 'Cargo.toml'
 

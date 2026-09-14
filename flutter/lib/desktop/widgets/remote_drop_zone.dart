@@ -16,14 +16,33 @@ const String kCustomDropDesktopPrefix = r'$DESKTOP$';
 /// Drives the stock upload path (`sessionSendFiles` with `isRemote: false`), so the peer stores
 /// the file exactly like a normal transfer — only the destination path is a pseudo-directory.
 /// The job id comes from the same allocator the file manager uses, so ids can never collide.
-void sendDroppedFileToDesktop({
+///
+/// Returns `false` when the drop cannot even be dispatched (empty path, unusable job id), which
+/// the caller turns into a visible failure instead of a silent no-op.
+bool sendDroppedFileToDesktop({
   required SessionID sessionId,
   required String localPath,
   required String name,
 }) {
+  if (localPath.isEmpty || name.isEmpty) {
+    debugPrint('Ignoring dropped item without a usable path/name: $localPath');
+    return false;
+  }
+  int actId;
+  try {
+    actId = int.parse(bind.mainGetCommonSync(key: 'transfer-job-id'));
+  } catch (e) {
+    // The allocator always answers with a number, but never let a dropped file crash the
+    // session window if it ever does not.
+    debugPrint('Failed to allocate transfer job id for dropped file: $e');
+    return false;
+  }
+  if (actId <= 0) {
+    return false;
+  }
   bind.sessionSendFiles(
     sessionId: sessionId,
-    actId: int.parse(bind.mainGetCommonSync(key: 'transfer-job-id')),
+    actId: actId,
     path: localPath,
     to: '$kCustomDropDesktopPrefix/$name',
     fileNum: 0,
@@ -31,6 +50,7 @@ void sendDroppedFileToDesktop({
     isRemote: false,
     isDir: false,
   );
+  return true;
 }
 
 /// Makes files dragged from the local desktop droppable straight onto the remote screen.
@@ -66,12 +86,22 @@ class _RemoteDropZoneState extends State<RemoteDropZone> {
       onDragExited: (_) => _setHovering(false),
       onDragDone: (detail) {
         _setHovering(false);
+        var sent = 0;
         for (final file in detail.files) {
-          sendDroppedFileToDesktop(
+          if (sendDroppedFileToDesktop(
             sessionId: widget.sessionId,
             localPath: file.path,
             name: file.name,
-          );
+          )) {
+            sent++;
+          }
+        }
+        // The upload runs in the background, so this reports "dispatched", not "finished".
+        // Without it a drop that does start still looks like nothing happened.
+        if (sent == 0) {
+          showToast(translate('Failed'));
+        } else {
+          showToast(translate('Sent {$sent} file(s) to remote desktop'));
         }
       },
       child: Stack(

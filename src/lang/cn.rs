@@ -296,6 +296,8 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Quit", "退出"),
         ("Help", "帮助"),
         ("Failed", "失败"),
+        ("Drop here to send to desktop", "拖到此处发送到对方桌面"),
+        ("Sent {} file(s) to remote desktop", "已发送 {} 个文件到对方桌面"),
         ("Succeeded", "成功"),
         ("Someone turns on privacy mode, exit", "其他用户使用隐私模式，退出"),
         ("Unsupported", "不支持"),
