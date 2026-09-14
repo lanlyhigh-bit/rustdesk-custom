@@ -8,6 +8,7 @@ import 'package:get/get.dart';
 import '../../common.dart';
 import '../../models/file_model.dart';
 import '../../models/platform_model.dart';
+import 'menu_button.dart';
 
 /// Custom: pseudo-directory prefix put in front of a dropped file's name.
 ///
@@ -187,6 +188,70 @@ class _RemoteDropZoneState extends State<RemoteDropZone> {
     }
   }
 
+  /// Stops one dropped transfer and retires its row.
+  ///
+  /// A drop has no other way back: the panel is the only handle on the upload, so a transfer that
+  /// never settles (peer stopped answering, target path refused) would otherwise stay on screen,
+  /// and keep its job alive, until the session is closed.
+  void _cancelJob(int id) {
+    final controller = widget.jobController;
+    final index = controller.jobTable.indexWhere((job) => job.id == id);
+    var unfinished = false;
+    if (index >= 0) {
+      final state = controller.jobTable[index].state;
+      unfinished = state != JobState.done && state != JobState.error;
+      controller.jobTable.removeAt(index);
+    }
+    if (unfinished) {
+      unawaited(_stopJob(id));
+    }
+    _retireJobs([id]);
+  }
+
+  /// Closes the panel, cancelling whatever is still running so no upload continues unseen.
+  void _dismissPanel() {
+    final controller = widget.jobController;
+    final ids = _jobs.toList();
+    final running = <int>[];
+    for (final id in ids) {
+      final index = controller.jobTable.indexWhere((job) => job.id == id);
+      if (index < 0) continue;
+      final state = controller.jobTable[index].state;
+      if (state != JobState.done && state != JobState.error) {
+        running.add(id);
+      }
+      controller.jobTable.removeAt(index);
+    }
+    for (final id in running) {
+      _stopJob(id);
+    }
+    _retireJobs(ids);
+  }
+
+  /// Asks the Rust side to drop the job on both ends, swallowing failures: the row is already gone
+  /// locally, so a rejected cancel must not surface as an unhandled error.
+  Future<void> _stopJob(int id) async {
+    try {
+      await widget.jobController.cancelJob(id);
+    } catch (e) {
+      debugPrint('Failed to cancel dropped transfer $id: $e');
+    }
+  }
+
+  void _retireJobs(List<int> ids) {
+    _settleTimer?.cancel();
+    _settleTimer = null;
+    _settledAt = null;
+    if (!mounted) {
+      _jobs.removeAll(ids);
+      return;
+    }
+    setState(() => _jobs.removeAll(ids));
+    if (_jobs.isNotEmpty) {
+      _ensureSettleTimer();
+    }
+  }
+
   /// Retires the panel once every dropped job has settled, holding the finished state briefly so the
   /// outcome can actually be read (the transfer itself gives no other confirmation).
   void _ensureSettleTimer() {
@@ -302,6 +367,16 @@ class _RemoteDropZoneState extends State<RemoteDropZone> {
                     '$settledCount/${active.length}',
                     style: const TextStyle(color: Colors.white54, fontSize: 11),
                   ),
+                  const SizedBox(width: 4),
+                  MenuButton(
+                    tooltip: translate('Close'),
+                    padding: const EdgeInsets.all(3),
+                    color: Colors.transparent,
+                    hoverColor: const Color(0x33FFFFFF),
+                    onPressed: _dismissPanel,
+                    child: const Icon(Icons.close,
+                        size: 14, color: Colors.white54),
+                  ),
                 ],
               ),
               const SizedBox(height: 10),
@@ -371,6 +446,18 @@ class _RemoteDropZoneState extends State<RemoteDropZone> {
                         : job.percentText,
                 style: TextStyle(color: color, fontSize: 11),
               ),
+              if (!done && !failed) ...[
+                const SizedBox(width: 4),
+                MenuButton(
+                  tooltip: translate('Cancel'),
+                  padding: const EdgeInsets.all(2),
+                  color: Colors.transparent,
+                  hoverColor: const Color(0x33FFFFFF),
+                  onPressed: () => _cancelJob(job.id),
+                  child: const Icon(Icons.close,
+                      size: 12, color: Colors.white38),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 5),

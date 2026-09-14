@@ -3503,13 +3503,16 @@ impl Connection {
                                 // note: 1.1.10 introduced identical file detection, which breaks original logic of send/recv files
                                 // whenever got send/recv request, check peer version to ensure old version of rustdesk
                                 let drop_target = resolve_custom_drop_path(&r.path);
+                                let is_custom_drop = drop_target != r.path;
+                                let drop_id = r.id;
+                                let drop_file_num = r.file_num;
                                 // Custom: a drag-and-drop upload has no file-manager job behind it on the
                                 // controlling side, so `postOverrideFileConfirm` would drop the digest event
                                 // and the write job would stay `file_is_waiting` forever. Drops just replace.
                                 // Paths without the custom prefix keep the stock behaviour untouched.
                                 let od = can_enable_overwrite_detection(get_version_number(
                                     &self.lr.version,
-                                )) && drop_target == r.path;
+                                )) && !is_custom_drop;
                                 self.send_fs(ipc::FS::NewWrite {
                                     path: drop_target.clone(),
                                     id: r.id,
@@ -3524,6 +3527,22 @@ impl Connection {
                                     total_size: r.total_size,
                                     conn_id: self.inner.id(),
                                 });
+                                if is_custom_drop {
+                                    // Custom: the controlling side's upload job only starts after it is
+                                    // told which offset to write from (`TransferJob::read` returns `None`
+                                    // while `file_confirmed` is unset). Stock answers that from the digest
+                                    // round-trip, which needs a file-manager window to resolve conflicts —
+                                    // exactly what a drop does not have, so an existing target file left
+                                    // the drop hanging at 0 B forever. Confirm offset 0 up front instead:
+                                    // a drop always replaces, and the queued digest becomes a no-op.
+                                    let mut req = FileTransferSendConfirmRequest {
+                                        id: drop_id,
+                                        file_num: drop_file_num,
+                                        ..Default::default()
+                                    };
+                                    req.set_offset_blk(0);
+                                    self.send(fs::new_send_confirm(req)).await;
+                                }
                                 self.post_file_audit(
                                     FileAuditType::RemoteReceive,
                                     &drop_target,
