@@ -297,7 +297,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Help", ""),
         ("Failed", ""),
         ("Drop here to send to desktop", ""),
-        ("Sent {} file(s) to remote desktop", ""),
+        ("Sending {} file(s) to the remote desktop", ""),
         ("Succeeded", ""),
         ("Someone turns on privacy mode, exit", ""),
         ("Unsupported", ""),

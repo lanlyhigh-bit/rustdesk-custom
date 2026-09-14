@@ -96,12 +96,12 @@ class _RemoteDropZoneState extends State<RemoteDropZone> {
             sent++;
           }
         }
-        // The upload runs in the background, so this reports "dispatched", not "finished".
-        // Without it a drop that does start still looks like nothing happened.
+        // The upload runs in the background, so this only ever reports "dispatched", never "arrived".
+        // Word it accordingly: a drop that starts but then fails must not read as a success.
         if (sent == 0) {
           showToast(translate('Failed'));
         } else {
-          showToast(translate('Sent {$sent} file(s) to remote desktop'));
+          showToast(translate('Sending {$sent} file(s) to the remote desktop'));
         }
       },
       child: Stack(

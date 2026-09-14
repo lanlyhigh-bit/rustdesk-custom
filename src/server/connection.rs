@@ -122,12 +122,48 @@ const CUSTOM_DROP_DESKTOP_PREFIX: &str = "$DESKTOP$";
 /// Uses the platform's known-folder API rather than a literal `<home>/Desktop`, because Windows
 /// desktops are routinely redirected (OneDrive "Back up folders") and a literal path would quietly
 /// drop the file into an invisible `C:\Users\x\Desktop` that Explorer never shows. This is the same
-/// primitive `ui_interface` already uses for its own desktop lookups. Falls back to `<home>/Desktop`
-/// when the platform has no notion of a desktop folder (or none exists yet).
+/// primitive `ui_interface` already uses for its own desktop lookups.
+///
+/// On Windows the server itself runs as SYSTEM (possibly in session 0), so this process's own
+/// desktop folder is the invisible `...\systemprofile\Desktop` — exactly the "the toast says it
+/// was sent, but nothing is on my desktop" failure. The active session user's desktop is therefore
+/// resolved first, and a service profile is never handed back as the answer.
 fn custom_desktop_dir() -> std::path::PathBuf {
-    hbb_common::directories_next::UserDirs::new()
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(dir) = crate::platform::windows::active_session_user_desktop_dir() {
+            return dir;
+        }
+    }
+    let dir = hbb_common::directories_next::UserDirs::new()
         .and_then(|user| user.desktop_dir().map(|p| p.to_path_buf()))
-        .unwrap_or_else(|| Config::get_home().join("Desktop"))
+        .unwrap_or_else(|| Config::get_home().join("Desktop"));
+    // Refuse to drop a file into a profile no logged-on user can see; the shared public desktop
+    // shows up on every session's desktop.
+    #[cfg(target_os = "windows")]
+    {
+        if is_service_profile_dir(&dir) {
+            if let Some(public) = public_desktop_dir() {
+                return public;
+            }
+        }
+    }
+    dir
+}
+
+#[cfg(target_os = "windows")]
+fn is_service_profile_dir(dir: &std::path::Path) -> bool {
+    let path = dir.to_string_lossy().to_ascii_lowercase();
+    path.contains("systemprofile") || path.contains("serviceprofiles")
+}
+
+#[cfg(target_os = "windows")]
+fn public_desktop_dir() -> Option<std::path::PathBuf> {
+    let public = std::env::var_os("PUBLIC")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("C:\\Users\\Public"));
+    let dir = public.join("Desktop");
+    dir.is_dir().then_some(dir)
 }
 
 fn resolve_custom_drop_path(path: &str) -> String {

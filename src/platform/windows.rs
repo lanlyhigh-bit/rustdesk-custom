@@ -1243,6 +1243,36 @@ pub fn get_active_user_home() -> Option<PathBuf> {
     None
 }
 
+/// Custom: `...\Users\<active session user>\Desktop` — the desktop the person sitting in front of
+/// the machine actually sees.
+///
+/// The remote-control server is launched as SYSTEM (see `launch_privileged_process`, whose C++
+/// counterpart is commented "START the app as system") and may even live in session 0. So neither
+/// the process's own known folders nor its owner describes the logged-on user: a file written to
+/// "the desktop" by the server lands in the invisible `...\systemprofile\Desktop`. The active
+/// session's `WTSUserName` is the one source that does describe the person at the screen.
+pub fn active_session_user_desktop_dir() -> Option<PathBuf> {
+    extern "C" {
+        fn get_active_user(path: *mut u16, n: u32, rdp: BOOL) -> u32;
+    }
+    // `get_active_user` returns a count that can exceed the string length (it mirrors the upstream
+    // helper), so keep the buffer zero-filled and trim the padding away afterwards.
+    let mut buff: Vec<u16> = vec![0; 256];
+    let n = unsafe { get_active_user(buff.as_mut_ptr(), buff.len() as _, share_rdp()) };
+    if n == 0 {
+        return None;
+    }
+    let username = String::from_utf16_lossy(&buff[..n as usize])
+        .trim_end_matches('\0')
+        .to_owned();
+    if username.is_empty() {
+        return None;
+    }
+    let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".to_owned());
+    let dir = PathBuf::from(format!("{}\\Users\\{}\\Desktop", drive, username));
+    dir.is_dir().then_some(dir)
+}
+
 #[cfg(not(feature = "flutter"))]
 #[inline]
 pub fn portable_service_logon_helper_paths() -> Option<(PathBuf, PathBuf)> {
