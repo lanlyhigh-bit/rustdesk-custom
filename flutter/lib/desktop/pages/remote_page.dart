@@ -999,6 +999,9 @@ class _RemotePageState extends State<RemotePage>
     );
     return RemoteDropZone(
       sessionId: sessionId,
+      // Reuse the session's own job table so dropped files report progress through the exact same
+      // `job_progress` pipeline the file manager uses.
+      jobController: _ffi.fileModel.jobController,
       enabled: !_ffi.ffiModel.viewOnly && !_ffi.ffiModel.isPeerAndroid,
       child: Stack(
         children: paints,

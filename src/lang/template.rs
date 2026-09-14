@@ -298,6 +298,7 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Failed", ""),
         ("Drop here to send to desktop", ""),
         ("Sending {} file(s) to the remote desktop", ""),
+        ("Sending to the remote desktop", ""),
         ("Succeeded", ""),
         ("Someone turns on privacy mode, exit", ""),
         ("Unsupported", ""),
@@ -766,6 +767,5 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Continue", ""),
         ("Browser didn't open? Use the url below to sign in.", ""),
         ("Lock canvas", ""),
-        ("Drop here to send to desktop", ""),
     ].iter().cloned().collect();
 }
