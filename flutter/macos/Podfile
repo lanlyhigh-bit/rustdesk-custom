@@ -1,4 +1,4 @@
-platform :osx, '10.14'
+platform :osx, '12.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -36,5 +36,12 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)
+    # Xcode 27 起最低支持的 macOS 部署目标是 12.0，而 Flutter 3.24.5 的
+    # flutter_additional_macos_build_settings 仍会把 Pods 各 target 写成 10.14
+    # （直接导致 xcodebuild 报 "range of supported deployment target versions is 12.0 to 27.0.x"）。
+    # 这里在它之后强制统一，属于本机工具链升级的适配，不改业务行为。
+    target.build_configurations.each do |config|
+      config.build_settings['MACOSX_DEPLOYMENT_TARGET'] = '12.0'
+    end
   end
 end
