@@ -294,9 +294,38 @@ impl<T: InvokeUiSession> Remote<T> {
                                 break;
                             }
                             if !self.read_jobs.is_empty() {
-                                if let Err(err) = fs::handle_read_jobs(&mut self.read_jobs, &mut peer).await {
-                                    self.handler.msgbox("error", "Connection Error", &err.to_string(), "");
-                                    break;
+                                // `fs::handle_read_jobs()` (upstream, hbb_common) removes a
+                                // finished read job itself and only notifies the *peer*
+                                // (`new_done` / `new_error`); it has no access to the local
+                                // UI. Snapshot the jobs so we can tell which ones just
+                                // finished, then mirror the notification to the UI —
+                                // otherwise an in-session upload panel keeps showing the
+                                // last progress tick and never auto-hides.
+                                let pending: Vec<(i32, i32, Option<String>)> = self
+                                    .read_jobs
+                                    .iter()
+                                    .map(|job| (job.id(), job.file_num(), job.job_error()))
+                                    .collect();
+                                // Bind the result first, so the mutable borrow of
+                                // `self.read_jobs` is released before touching `self`.
+                                let res = fs::handle_read_jobs(&mut self.read_jobs, &mut peer).await;
+                                match res {
+                                    Ok(_log) => {
+                                        for (id, file_num, err) in pending {
+                                            if fs::get_job_immutable(id, &self.read_jobs).is_none() {
+                                                // The job was just removed => it completed.
+                                                // `read()` advances `file_num` past the last
+                                                // file right before returning `None`, so the
+                                                // snapshot value is one behind the one
+                                                // `new_done()` reports to the peer.
+                                                self.handle_job_status(id, file_num + 1, err);
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        self.handler.msgbox("error", "Connection Error", &err.to_string(), "");
+                                        break;
+                                    }
                                 }
                                 self.update_jobs_status();
                             } else {
