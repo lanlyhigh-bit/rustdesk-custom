@@ -24,6 +24,9 @@ const String kCustomDropDesktopPrefix = r'$DESKTOP$';
 /// Rust side streams `job_progress` / `job_done` events for, and `tryUpdateJobProgress` folds those
 /// into `jobTable`. Without it the bytes still move, but nothing can be drawn for them.
 ///
+/// The upload is dispatched by [_dispatchDrop], which must run *after* the job is registered and
+/// sends both of its instructions in order.
+///
 /// Returns the job id, or `null` when the drop cannot be dispatched at all.
 int? sendDroppedItemToDesktop({
   required SessionID sessionId,
@@ -63,18 +66,60 @@ int? sendDroppedItemToDesktop({
     unawaited(_fillDirectorySize(jobController, jobId, localPath));
   }
 
-  bind.sessionSendFiles(
+  unawaited(_dispatchDrop(
     sessionId: sessionId,
-    actId: jobId,
-    path: localPath,
-    to: '$kCustomDropDesktopPrefix/$name',
-    fileNum: 0,
-    includeHidden: false,
-    isRemote: false,
+    jobId: jobId,
+    localPath: localPath,
+    name: name,
     isDir: isDir,
-  );
+  ));
   return jobId;
 }
+
+/// Hands one dropped item to the Rust side, then tells it how to resolve the target file.
+///
+/// The two calls must stay in this order and must both be awaited: they land in the session's
+/// io_loop as a queue, and the second one only means anything once the job of the first exists.
+///
+/// The second call is what makes a drop work at all. An upload job refuses to read a single byte
+/// until it is told which offset to start at (`TransferJob::read` returns `None` while
+/// `file_confirmed` is unset), and stock RustDesk gets that answer out of a digest round-trip:
+/// the receiving side reports "that file already exists", and the *file transfer window* asks the
+/// user whether to overwrite. A drop has no such window, so that question used to go nowhere and a
+/// drop onto an existing name sat at `0 B` for good. Answering it here - offset 0, a drop always
+/// replaces - confirms the job up front, which also takes the sender off the peer's reply
+/// entirely: a digest that is already in flight simply becomes a no-op.
+Future<void> _dispatchDrop({
+  required SessionID sessionId,
+  required int jobId,
+  required String localPath,
+  required String name,
+  required bool isDir,
+}) async {
+  try {
+    await bind.sessionSendFiles(
+      sessionId: sessionId,
+      actId: jobId,
+      path: localPath,
+      to: '$kCustomDropDesktopPrefix/$name',
+      fileNum: 0,
+      includeHidden: false,
+      isRemote: false,
+      isDir: isDir,
+    );
+    await bind.sessionSetConfirmOverrideFile(
+      sessionId: sessionId,
+      actId: jobId,
+      fileNum: 0,
+      needOverride: true,
+      remember: true,
+      isUpload: true,
+    );
+  } catch (e) {
+    debugPrint('Failed to dispatch dropped item $localPath: $e');
+  }
+}
+
 
 /// Adds up a dropped directory so its progress bar has a total. Best-effort only: on failure the
 /// bar stays indeterminate rather than blocking the transfer.
