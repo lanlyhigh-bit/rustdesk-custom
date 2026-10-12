@@ -66,6 +66,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Orientation? _currentOrientation;
   final _uniqueKey = UniqueKey();
   Timer? _iosKeyboardWorkaroundTimer;
+  // 定制：连接建立后的首帧兜底定时器。对端（如 macOS）显示器休眠/采集冷启动时
+  // 首帧可能数秒才出，手机侧极易误判"连不上"而放弃，故到点主动请求一次刷新。
+  Timer? _firstFrameFallbackTimer;
 
   final _blockableOverlayState = BlockableOverlayState();
 
@@ -138,6 +141,16 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (gFFI.ffiModel.pi.isSet.value) {
       _initWaylandKeyboardGateIfNeeded();
     }
+    // 定制：首帧兜底。连接建立 3.5 秒后若仍在等首帧（对端采集器/编码器冷启动慢，
+    // 典型如 macOS 显示器休眠后唤醒期间 capturer 交不出帧），主动请求一次画面刷新，
+    // 促使对端重建视频服务。一次性触发，不循环，避免刷新风暴。
+    _firstFrameFallbackTimer = Timer(const Duration(milliseconds: 3500), () {
+      if (!mounted) return;
+      if (gFFI.ffiModel.pi.isSet.isTrue &&
+          gFFI.ffiModel.waitForFirstImage.isTrue) {
+        sessionRefreshVideo(sessionId, gFFI.ffiModel.pi);
+      }
+    });
   }
 
   @override
@@ -166,6 +179,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     await gFFI.close();
     _timer?.cancel();
     _iosKeyboardWorkaroundTimer?.cancel();
+    _firstFrameFallbackTimer?.cancel();
     gFFI.dialogManager.dismissAll();
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
         overlays: SystemUiOverlay.values);

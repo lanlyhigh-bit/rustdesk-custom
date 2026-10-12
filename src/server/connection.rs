@@ -392,6 +392,9 @@ pub struct Connection {
     start_cm_ipc_para: Option<StartCmIpcPara>,
     auto_disconnect_timer: Option<(Instant, u64)>,
     authed_conn_id: Option<self::raii::AuthedConnID>,
+    // 定制：refresh_video_display 节流时间戳。凌晨实测重连风暴：每次 PeerInfo 都
+    // 触发刷新 → 视频服务被反复杀/建（278 次 SWITCH，间隔 1.4s）→ 首帧永远出不来。
+    last_refresh_video_instant: std::sync::Mutex<Option<Instant>>,
     file_remove_log_control: FileRemoveLogControl,
     last_supported_encoding: Option<SupportedEncoding>,
     services_subed: bool,
@@ -598,6 +601,7 @@ impl Connection {
             }),
             auto_disconnect_timer: None,
             authed_conn_id: None,
+            last_refresh_video_instant: std::sync::Mutex::new(None),
             file_remove_log_control: FileRemoveLogControl::new(id),
             last_supported_encoding: None,
             services_subed: false,
@@ -4351,6 +4355,19 @@ impl Connection {
     }
 
     fn refresh_video_display(&self, display: Option<usize>) {
+        // 定制：节流。距上次刷新不足 2 秒则跳过。防重连风暴把视频服务反复杀/建：
+        // 每次刚建好就被杀，首帧永远出不来，控制端表现为黑屏或等不及秒断。
+        // 客户端主动刷新、切显示器等低频操作不受影响（人不可能 2 秒内连点）。
+        {
+            let now = Instant::now();
+            let mut last = self.last_refresh_video_instant.lock().unwrap();
+            if let Some(t) = *last {
+                if now.duration_since(t).as_secs_f64() < 2.0 {
+                    return;
+                }
+            }
+            *last = Some(now);
+        }
         video_service::refresh();
         self.server.upgrade().map(|s| {
             s.read().unwrap().set_video_service_opt(

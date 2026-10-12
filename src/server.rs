@@ -259,9 +259,12 @@ pub async fn create_tcp_connection(
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
+        // 定制：-t 5 太短。本机 displaysleep=10 分钟，长空闲后第一次连接时显示器
+        // 正休眠，caffeinate -u 点亮后 capturer 需要数秒才恢复出帧（实测 18:50 那次
+        // 5 秒窗口 55.73 过期，控制端 55.43 就放弃了）。放宽到 25 秒覆盖首帧窗口。
         if let Ok(task) = Command::new("/usr/bin/caffeinate")
             .arg("-u")
-            .arg("-t 5")
+            .arg("-t 25")
             .spawn()
         {
             super::CHILD_PROCESS.lock().unwrap().push(task);

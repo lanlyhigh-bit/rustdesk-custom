@@ -121,6 +121,9 @@ class _RemotePageState extends State<RemotePage>
   // Debounce timer for pointer lock center updates during window events.
   // Uses kDefaultPointerLockCenterThrottleMs from consts.dart for the duration.
   Timer? _pointerLockCenterDebounceTimer;
+  // 定制：连接建立后的首帧兜底定时器。长空白（对端显示器休眠/采集冷启动）后
+  // 第一次连接时首帧可能要数秒才出，对端控制侧容易放弃，故到点主动请求一次刷新。
+  Timer? _firstFrameFallbackTimer;
 
   // We need `_instanceIdOnEnterOrLeaveImage4Toolbar` together with `_onEnterOrLeaveImage4Toolbar`
   // to identify the toolbar instance and its callback function.
@@ -165,6 +168,16 @@ class _RemotePageState extends State<RemotePage>
           .updateStatus(bind.sessionGetIsRecording(sessionId: _ffi.sessionId));
     });
     _ffi.canvasModel.initializeEdgeScrollFallback(this);
+    // 定制：首帧兜底。连接建立 3.5 秒后若仍在等首帧（对端采集器/编码器冷启动慢，
+    // 典型如 macOS 显示器休眠后唤醒期间 capturer 交不出帧），主动请求一次画面刷新，
+    // 促使对端重建视频服务。一次性触发，不循环，避免刷新风暴。
+    _firstFrameFallbackTimer = Timer(const Duration(milliseconds: 3500), () {
+      if (!mounted) return;
+      if (_ffi.ffiModel.pi.isSet.isTrue &&
+          _ffi.ffiModel.waitForFirstImage.isTrue) {
+        sessionRefreshVideo(sessionId, _ffi.ffiModel.pi);
+      }
+    });
     _ffi.start(
       widget.id,
       password: widget.password,
@@ -557,6 +570,16 @@ class _RemotePageState extends State<RemotePage>
     WakelockManager.enable(_uniqueKey);
     // Update pointer lock center when window is restored
     _updatePointerLockCenterIfNeeded();
+    // 定制：从最小化恢复时主动请求一次关键帧。最小化期间控制端停渲染，可能错过
+    // 对端的关键帧周期，恢复后解码参考链断裂即黑屏；刷新一次让对端立即出关键帧。
+    if (_ffi.ffiModel.pi.isSet.isTrue) {
+      Future.delayed(const Duration(milliseconds: 200), () {
+        if (!mounted) return;
+        if (_ffi.ffiModel.pi.isSet.isTrue) {
+          sessionRefreshVideo(sessionId, _ffi.ffiModel.pi);
+        }
+      });
+    }
   }
 
   // When the window is unminimized, onWindowMaximize or onWindowRestore can be called when the old state was maximized or not.
@@ -657,6 +680,8 @@ class _RemotePageState extends State<RemotePage>
 
     _pointerLockCenterDebounceTimer?.cancel();
     _pointerLockCenterDebounceTimer = null;
+    _firstFrameFallbackTimer?.cancel();
+    _firstFrameFallbackTimer = null;
     _waylandKeyboardModeWorker?.dispose();
     // Clear callback reference to prevent memory leaks and stale references
     _ffi.inputModel.onRelativeMouseModeDisabled = null;
