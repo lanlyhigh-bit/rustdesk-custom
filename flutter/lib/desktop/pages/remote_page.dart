@@ -129,6 +129,11 @@ class _RemotePageState extends State<RemotePage>
   // 的 WM_SIZE 分支），用该标志确保两路回调都能正确触发恢复刷新，同时避免用户
   // 单纯最大化窗口（未经历最小化）时也触发对端重建采集。
   bool _restoredFromMinimize = false;
+  // 定制：最小化恢复后的画面恢复闭环。代次在每次恢复时自增、再次最小化时也自增，
+  // 用来作废旧一轮的补刷循环。
+  int _videoRecoverGeneration = 0;
+  static const _kVideoRecoverMaxAttempts = 5;
+  static const _kVideoRecoverCheckDelay = Duration(milliseconds: 2500);
 
   // We need `_instanceIdOnEnterOrLeaveImage4Toolbar` together with `_onEnterOrLeaveImage4Toolbar`
   // to identify the toolbar instance and its callback function.
@@ -593,11 +598,13 @@ class _RemotePageState extends State<RemotePage>
     _refreshVideoIfRestoreFromMinimize();
   }
 
-  /// 定制：从最小化恢复后主动请求关键帧。
-  /// 最小化期间控制端停渲染、对端可能进入显示器休眠（采集管线随之停止），恢复后
-  /// 必须让对端「点亮显示器 + 重建采集」才能重新出帧，否则控制端持续黑屏。
-  /// 200ms 第一次刷新、2200ms 第二次（间隔 >=2s，避开被控端 refresh_video_display
-  /// 的 2s 节流），覆盖对端显示器唤醒/capturer 冷启动需要数秒的场景。
+  /// 定制：从最小化恢复后恢复画面（「刷新 → 验帧 → 按需补刷」的闭环）。
+  /// 固定刷两次不够：被控端 `refresh_video_display` 有 2s 节流，且重建采集需要时间，
+  /// 下一次刷新可能在首帧出来之前就把刚建好的采集再杀一次（被控端注释里的
+  /// 「刚建好就被杀，首帧永远出不来」），控制端于是永久冻在最后一帧——输入其实还通，
+  /// 用户看到的是「假死、点击没反应」，重连才能恢复。
+  /// 这里拿客户端每秒回传的真实帧率当判据：刷完等 2.5s，仍无帧才补刷，最多 5 次；
+  /// 一旦有帧立刻停，避免在正常会话上反复重建采集。
   /// 仅对「最小化→恢复」路径生效（_restoredFromMinimize 标志），用户单纯最大化
   /// 窗口不会触发对端重建采集。
   void _refreshVideoIfRestoreFromMinimize() {
@@ -608,14 +615,41 @@ class _RemotePageState extends State<RemotePage>
     if (!_ffi.ffiModel.pi.isSet.isTrue) {
       return;
     }
-    for (final delayMs in const [200, 2200]) {
-      Future.delayed(Duration(milliseconds: delayMs), () {
-        if (!mounted) return;
-        if (_ffi.ffiModel.pi.isSet.isTrue) {
-          sessionRefreshVideo(sessionId, _ffi.ffiModel.pi);
-        }
-      });
+    _videoRecoverStep(++_videoRecoverGeneration, 0);
+  }
+
+  void _videoRecoverStep(int generation, int attempt) {
+    if (!mounted || generation != _videoRecoverGeneration) {
+      return;
     }
+    if (!_ffi.ffiModel.pi.isSet.isTrue) {
+      return;
+    }
+    if (attempt > 0 && _hasVideoFrameRecently()) {
+      return;
+    }
+    if (attempt >= _kVideoRecoverMaxAttempts) {
+      return;
+    }
+    sessionRefreshVideo(sessionId, _ffi.ffiModel.pi);
+    Future.delayed(_kVideoRecoverCheckDelay,
+        () => _videoRecoverStep(generation, attempt + 1));
+  }
+
+  /// 定制：当前会话最近一秒有没有出帧。数据来自客户端 status_timer 每秒回传的
+  /// quality status（多显示器时是空格分隔的列表，任一显示器有帧即算有帧）。
+  bool _hasVideoFrameRecently() {
+    final fps = _ffi.qualityMonitorModel.data.fps;
+    if (fps == null) {
+      return false;
+    }
+    for (final v in fps.split(' ')) {
+      final n = int.tryParse(v);
+      if (n != null && n > 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   @override
@@ -655,6 +689,8 @@ class _RemotePageState extends State<RemotePage>
     super.onWindowMinimize();
     // 定制：标记经历过最小化，恢复时（restore 或 maximize 事件）触发恢复刷新。
     _restoredFromMinimize = true;
+    // 定制：作废进行中的补刷循环，最小化期间不再反复请求对端重建采集。
+    _videoRecoverGeneration++;
     WakelockManager.disable(_uniqueKey);
     if (isMacOS) {
       _macOSFullScreenFocusRecovery.cancel();
