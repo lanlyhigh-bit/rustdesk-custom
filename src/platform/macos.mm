@@ -32,6 +32,15 @@ extern "C" bool IsCanScreenRecording(bool prompt) {
     bool res = CGPreflightScreenCaptureAccess();
     if (!res && prompt) {
         CGRequestScreenCaptureAccess();
+        // CGRequestScreenCaptureAccess() only presents the system dialog the first
+        // time this app asks; once the user has answered -- or a stale TCC record is
+        // left behind by an earlier build -- it returns silently, so the "Configure"
+        // button in the home page looks dead. Open the pane as a fallback, the same
+        // way InputMonitoringAuthStatus() does when access was denied.
+        if (!CGPreflightScreenCaptureAccess()) {
+            NSString *urlString = @"x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture";
+            [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:urlString]];
+        }
     }
     return res;
     #endif
