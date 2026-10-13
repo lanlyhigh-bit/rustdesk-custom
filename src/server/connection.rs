@@ -1203,6 +1203,10 @@ impl Connection {
             match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
                 Ok(v) => match v {
                     MessageInput::Mouse(mouse_input) => {
+                        // 定制：被控端 macOS 可能已按电源策略熄灭显示器（采集已停止），
+                        // 收到远端输入时先兜底唤醒，保证随后能重新出帧（详见函数注释）。
+                        #[cfg(target_os = "macos")]
+                        wake_display_on_remote_input();
                         handle_mouse(
                             &mouse_input.msg,
                             mouse_input.conn_id,
@@ -1213,6 +1217,8 @@ impl Connection {
                         );
                     }
                     MessageInput::Key((mut msg, press)) => {
+                        #[cfg(target_os = "macos")]
+                        wake_display_on_remote_input();
                         // Set the press state to false, use `down` only in `handle_key()`.
                         msg.press = false;
                         if press {
@@ -1225,6 +1231,8 @@ impl Connection {
                         }
                     }
                     MessageInput::Pointer((msg, id)) => {
+                        #[cfg(target_os = "macos")]
+                        wake_display_on_remote_input();
                         handle_pointer(&msg, id);
                     }
                     MessageInput::BlockOn => {
@@ -6412,6 +6420,38 @@ impl FileRemoveLogControl {
             })
             .count();
         v
+    }
+}
+
+/// 定制：被控端 macOS 收到远端输入时点亮显示器（5 秒节流）。
+///
+/// 背景：被控端显示器按电源策略休眠后，CGDisplayStream 采集会停止送帧，
+/// 控制端表现为持续黑屏/卡死；而远端输入（鼠标/键盘/触控）正是"用户马上要看
+/// 画面"的最强信号。这里在被控端补一层兜底唤醒：`caffeinate -u` 会声明用户
+/// 活动、立即点亮显示器并重置系统空闲计时器；只要持续操作就不会再次休眠。
+/// 节流避免高频鼠标移动造成进程风暴；caffeinate 进程句柄交给 CHILD_PROCESS
+/// 统一回收（check_zombie 线程负责 reap）。
+#[cfg(target_os = "macos")]
+fn wake_display_on_remote_input() {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static LAST_WAKE: Mutex<Option<Instant>> = Mutex::new(None);
+    let now = Instant::now();
+    {
+        let mut last = LAST_WAKE.lock().unwrap();
+        if let Some(t) = *last {
+            if now.duration_since(t) < Duration::from_secs(5) {
+                return;
+            }
+        }
+        *last = Some(now);
+    }
+    if let Ok(task) = std::process::Command::new("/usr/bin/caffeinate")
+        .arg("-u")
+        .arg("-t 5")
+        .spawn()
+    {
+        super::CHILD_PROCESS.lock().unwrap().push(task);
     }
 }
 
