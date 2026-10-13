@@ -570,10 +570,18 @@ class _RemotePageState extends State<RemotePage>
     WakelockManager.enable(_uniqueKey);
     // Update pointer lock center when window is restored
     _updatePointerLockCenterIfNeeded();
-    // 定制：从最小化恢复时主动请求一次关键帧。最小化期间控制端停渲染，可能错过
-    // 对端的关键帧周期，恢复后解码参考链断裂即黑屏；刷新一次让对端立即出关键帧。
+    // 定制：从最小化恢复时主动请求关键帧。最小化期间控制端停渲染，可能错过
+    // 对端的关键帧周期，恢复后解码参考链断裂即黑屏；刷新让对端立即出关键帧。
+    // 对端若显示器休眠/采集器冷启动，单次刷新可能仍无帧，故 200ms 第一次、2200ms
+    // 第二次（间隔 >=2s，避开后端 refresh_video_display 的 2s 节流）。
     if (_ffi.ffiModel.pi.isSet.isTrue) {
       Future.delayed(const Duration(milliseconds: 200), () {
+        if (!mounted) return;
+        if (_ffi.ffiModel.pi.isSet.isTrue) {
+          sessionRefreshVideo(sessionId, _ffi.ffiModel.pi);
+        }
+      });
+      Future.delayed(const Duration(milliseconds: 2200), () {
         if (!mounted) return;
         if (_ffi.ffiModel.pi.isSet.isTrue) {
           sessionRefreshVideo(sessionId, _ffi.ffiModel.pi);

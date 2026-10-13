@@ -4356,7 +4356,7 @@ impl Connection {
 
     fn refresh_video_display(&self, display: Option<usize>) {
         // 定制：节流。距上次刷新不足 2 秒则跳过。防重连风暴把视频服务反复杀/建：
-        // 每次刚建好就被杀，首帧永远出不来，控制端表现为黑屏或等不及秒断。
+        // 每次刚建好就被杀，首帧永远出不来，控制端表现为黑屏或等不及待秒断。
         // 客户端主动刷新、切显示器等低频操作不受影响（人不可能 2 秒内连点）。
         {
             let now = Instant::now();
@@ -4367,6 +4367,19 @@ impl Connection {
                 }
             }
             *last = Some(now);
+        }
+        // 定制：macOS 被控端在刷新时可能刚被唤醒/显示器休眠，capturer 出不了首帧。
+        // caffeinate -u 5s 先把显示器点亮，再让视频服务重建，否则控制端仍黑屏。
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            if let Ok(task) = Command::new("/usr/bin/caffeinate")
+                .arg("-u")
+                .arg("-t 5")
+                .spawn()
+            {
+                super::CHILD_PROCESS.lock().unwrap().push(task);
+            }
         }
         video_service::refresh();
         self.server.upgrade().map(|s| {
