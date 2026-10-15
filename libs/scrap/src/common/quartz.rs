@@ -12,6 +12,7 @@ pub struct Capturer {
 impl Capturer {
     pub fn new(display: Display) -> io::Result<Capturer> {
         let frame = Arc::new(Mutex::new(None));
+        let display_id = display.0.id();
 
         let f = frame.clone();
         let inner = quartz::Capturer::new(
@@ -27,6 +28,25 @@ impl Capturer {
             },
         )
         .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+
+        // 定制：采集器建立后立即抓一帧静态画面塞进帧缓冲（bootstrap frame）。
+        // CGDisplayStream 只在屏幕内容变化时回调；显示器常亮且桌面静止时
+        // （典型场景：控制端最小化恢复触发的采集重建）stream 不会有任何回调，
+        // 帧缓冲保持为空，编码循环只能报 "no valid frame"，控制端表现为画面
+        // 永远停在最后一帧（假死、点击无反馈）。新连接通常因唤醒屏幕/用户
+        // 立即操作而侥幸出帧，恢复重建则必踩此坑。
+        unsafe {
+            let surface = quartz::ffi::CGDisplayCreateIOSurface(display_id);
+            if !surface.is_null() {
+                if let Ok(mut g) = frame.lock() {
+                    *g = Some(quartz::Frame::new(surface));
+                } else {
+                    quartz::ffi::CFRelease(surface);
+                }
+                // Frame::new 内部已 CFRetain，这里释放 CGDisplayCreateIOSurface 返回的引用
+                quartz::ffi::CFRelease(surface);
+            }
+        }
 
         Ok(Capturer {
             inner,

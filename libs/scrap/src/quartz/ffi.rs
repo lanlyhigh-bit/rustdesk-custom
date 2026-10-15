@@ -195,6 +195,12 @@ extern "C" {
     pub fn CGDisplayBounds(display: u32) -> CGRect;
     pub fn BackingScaleFactor(display: u32) -> f32;
 
+    // 定制：抓一张静态 IOSurface。CGDisplayStream 只在屏幕内容变化时回调，
+    // 显示器常亮且桌面静止时（典型：控制端最小化恢复触发的采集重建）stream
+    // 永远不回调，采集器拿不到首帧，控制端画面会停在最后一帧（假死）。
+    // 用这个 API 在采集器建立后主动取一帧兜底。
+    pub fn CGDisplayCreateIOSurface(display: u32) -> IOSurfaceRef;
+
     // IOSurface
 
     pub fn IOSurfaceGetAllocSize(buffer: IOSurfaceRef) -> usize;
