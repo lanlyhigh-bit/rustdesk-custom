@@ -37,24 +37,31 @@ impl Capturer {
         // 立即操作而侥幸出帧，恢复重建则必踩此坑。
         // CGDisplayCreateIOSurface 是半私有 API 且新 macOS 已不导出，改走
         // 公开的 CGDisplayCreateImage → DataProvider，提取 BGRA 后构造内存帧。
+        // ⚠️ 必须先过 CGPreflightScreenCaptureAccess：无授权时 CGDisplayCreateImage
+        // 可能提前触发系统 TCC 弹窗，打乱首页「屏幕录制→辅助功能→输入监控」的
+        // 链式权限申请（2026-10-16 实测：差分装机后 ScreenCapture 授权被清、
+        // 弹窗被提前消耗，用户看到"只有第一个权限申请"）；且无授权时采集器
+        // 本来就拿不到内容，bootstrap 无意义。
         unsafe {
-            let image = quartz::ffi::CGDisplayCreateImage(display_id);
-            if !image.is_null() {
-                let provider = quartz::ffi::CGImageGetDataProvider(image);
-                if !provider.is_null() {
-                    let data = quartz::ffi::CGDataProviderCopyData(provider);
-                    if !data.is_null() {
-                        let ptr = quartz::ffi::CFDataGetBytePtr(data);
-                        let len = quartz::ffi::CFDataGetLength(data) as usize;
-                        let stride = quartz::ffi::CGImageGetBytesPerRow(image);
-                        let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-                        if let Ok(mut g) = frame.lock() {
-                            *g = Some(quartz::Frame::from_raw_bgra(bytes, stride));
+            if quartz::ffi::CGPreflightScreenCaptureAccess() {
+                let image = quartz::ffi::CGDisplayCreateImage(display_id);
+                if !image.is_null() {
+                    let provider = quartz::ffi::CGImageGetDataProvider(image);
+                    if !provider.is_null() {
+                        let data = quartz::ffi::CGDataProviderCopyData(provider);
+                        if !data.is_null() {
+                            let ptr = quartz::ffi::CFDataGetBytePtr(data);
+                            let len = quartz::ffi::CFDataGetLength(data) as usize;
+                            let stride = quartz::ffi::CGImageGetBytesPerRow(image);
+                            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+                            if let Ok(mut g) = frame.lock() {
+                                *g = Some(quartz::Frame::from_raw_bgra(bytes, stride));
+                            }
+                            quartz::ffi::CFRelease(data);
                         }
-                        quartz::ffi::CFRelease(data);
                     }
+                    quartz::ffi::CFRelease(image);
                 }
-                quartz::ffi::CFRelease(image);
             }
         }
 

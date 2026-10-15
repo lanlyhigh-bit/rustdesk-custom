@@ -204,6 +204,7 @@ extern "C" {
     // 注：CGDisplayCreateIOSurface 是半私有 API，新 macOS 的 CoreGraphics 已
     // 不再导出（tbd 与二进制都没有），只能用公开的 CGDisplayCreateImage 路线，
     // 经 DataProvider 提取 BGRA 像素后构造内存帧。
+    pub fn CGPreflightScreenCaptureAccess() -> bool;
     pub fn CGDisplayCreateImage(display: u32) -> CGImageRef;
     pub fn CGImageGetDataProvider(image: CGImageRef) -> CGDataProviderRef;
     pub fn CGImageGetBytesPerRow(image: CGImageRef) -> usize;
