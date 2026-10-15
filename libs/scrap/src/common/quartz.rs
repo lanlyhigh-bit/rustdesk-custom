@@ -35,16 +35,26 @@ impl Capturer {
         // 帧缓冲保持为空，编码循环只能报 "no valid frame"，控制端表现为画面
         // 永远停在最后一帧（假死、点击无反馈）。新连接通常因唤醒屏幕/用户
         // 立即操作而侥幸出帧，恢复重建则必踩此坑。
+        // CGDisplayCreateIOSurface 是半私有 API 且新 macOS 已不导出，改走
+        // 公开的 CGDisplayCreateImage → DataProvider，提取 BGRA 后构造内存帧。
         unsafe {
-            let surface = quartz::ffi::CGDisplayCreateIOSurface(display_id);
-            if !surface.is_null() {
-                if let Ok(mut g) = frame.lock() {
-                    *g = Some(quartz::Frame::new(surface));
-                } else {
-                    quartz::ffi::CFRelease(surface);
+            let image = quartz::ffi::CGDisplayCreateImage(display_id);
+            if !image.is_null() {
+                let provider = quartz::ffi::CGImageGetDataProvider(image);
+                if !provider.is_null() {
+                    let data = quartz::ffi::CGDataProviderCopyData(provider);
+                    if !data.is_null() {
+                        let ptr = quartz::ffi::CFDataGetBytePtr(data);
+                        let len = quartz::ffi::CFDataGetLength(data) as usize;
+                        let stride = quartz::ffi::CGImageGetBytesPerRow(image);
+                        let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+                        if let Ok(mut g) = frame.lock() {
+                            *g = Some(quartz::Frame::from_raw_bgra(bytes, stride));
+                        }
+                        quartz::ffi::CFRelease(data);
+                    }
                 }
-                // Frame::new 内部已 CFRetain，这里释放 CGDisplayCreateIOSurface 返回的引用
-                quartz::ffi::CFRelease(surface);
+                quartz::ffi::CFRelease(image);
             }
         }
 

@@ -31,6 +31,11 @@ impl Frame {
 
     #[inline]
     pub fn inner(&self) -> &[u8] {
+        // 定制：bootstrap 帧没有 IOSurface，用已转换的 bgra 参与变化检测，
+        // 否则空 inner 会被 would_block_if_equal 判为"与上次相同"而吞掉首帧。
+        if self.surface.is_null() {
+            return &self.bgra;
+        }
         self.inner
     }
 
@@ -40,6 +45,9 @@ impl Frame {
 
     pub fn surface_to_bgra<'a>(&'a mut self, h: usize) {
         unsafe {
+            if self.surface.is_null() {
+                return;
+            }
             let plane0 = IOSurfaceGetBaseAddressOfPlane(self.surface, 0);
             self.bgra_stride = IOSurfaceGetBytesPerRowOfPlane(self.surface, 0);
             self.bgra.resize(self.bgra_stride * h, 0);
@@ -62,10 +70,26 @@ impl ops::Deref for Frame {
 impl Drop for Frame {
     fn drop(&mut self) {
         unsafe {
+            if self.surface.is_null() {
+                return;
+            }
             IOSurfaceUnlock(self.surface, SURFACE_LOCK_READ_ONLY, ptr::null_mut());
 
             IOSurfaceDecrementUseCount(self.surface);
             CFRelease(self.surface);
+        }
+    }
+}
+
+impl Frame {
+    // 定制：从纯内存像素构造的 bootstrap 帧（surface 为 null）。数据来自
+    // CGDisplayCreateImage 的 DataProvider 拷贝，已是 BGRA，无需再转换。
+    pub fn from_raw_bgra(data: Vec<u8>, stride: usize) -> Frame {
+        Frame {
+            surface: ptr::null_mut(),
+            inner: &[],
+            bgra: data,
+            bgra_stride: stride,
         }
     }
 }

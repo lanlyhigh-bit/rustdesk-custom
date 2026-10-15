@@ -13,6 +13,9 @@ pub type IOSurfaceRef = *mut c_void;
 pub type DispatchQueue = *mut c_void;
 pub type DispatchQueueAttr = *mut c_void;
 pub type CFAllocatorRef = *mut c_void;
+pub type CGImageRef = *mut c_void;
+pub type CGDataProviderRef = *mut c_void;
+pub type CFDataRef = *const c_void;
 
 #[repr(C)]
 pub struct CFDictionaryKeyCallBacks {
@@ -195,11 +198,18 @@ extern "C" {
     pub fn CGDisplayBounds(display: u32) -> CGRect;
     pub fn BackingScaleFactor(display: u32) -> f32;
 
-    // 定制：抓一张静态 IOSurface。CGDisplayStream 只在屏幕内容变化时回调，
-    // 显示器常亮且桌面静止时（典型：控制端最小化恢复触发的采集重建）stream
-    // 永远不回调，采集器拿不到首帧，控制端画面会停在最后一帧（假死）。
-    // 用这个 API 在采集器建立后主动取一帧兜底。
-    pub fn CGDisplayCreateIOSurface(display: u32) -> IOSurfaceRef;
+    // 定制：抓一张静态屏幕快照做 bootstrap 帧。CGDisplayStream 只在屏幕内容
+    // 变化时回调，显示器常亮且桌面静止时（典型：控制端最小化恢复触发的采集
+    // 重建）stream 零回调，采集器拿不到首帧，控制端画面停在最后一帧（假死）。
+    // 注：CGDisplayCreateIOSurface 是半私有 API，新 macOS 的 CoreGraphics 已
+    // 不再导出（tbd 与二进制都没有），只能用公开的 CGDisplayCreateImage 路线，
+    // 经 DataProvider 提取 BGRA 像素后构造内存帧。
+    pub fn CGDisplayCreateImage(display: u32) -> CGImageRef;
+    pub fn CGImageGetDataProvider(image: CGImageRef) -> CGDataProviderRef;
+    pub fn CGImageGetBytesPerRow(image: CGImageRef) -> usize;
+    pub fn CGDataProviderCopyData(provider: CGDataProviderRef) -> CFDataRef;
+    pub fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
+    pub fn CFDataGetLength(data: CFDataRef) -> isize;
 
     // IOSurface
 
