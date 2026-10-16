@@ -2335,6 +2335,13 @@ pub fn main_is_can_input_monitoring(prompt: bool) -> SyncReturn<bool> {
     SyncReturn(is_can_input_monitoring(prompt))
 }
 
+// 定制：重启 app（仅 macOS 有意义）。用于屏幕录制授权后让权限视角立即刷新，
+// 与首页权限卡片的自动重启引导配合。
+pub fn main_restart_app() {
+    #[cfg(target_os = "macos")]
+    crate::platform::macos::restart_app();
+}
+
 pub fn main_is_share_rdp() -> SyncReturn<bool> {
     SyncReturn(is_share_rdp())
 }
