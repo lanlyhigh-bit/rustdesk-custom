@@ -46,9 +46,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
   var watchIsCanScreenRecording = false;
   var watchIsProcessTrust = false;
   var watchIsInputMonitoring = false;
-  // 定制：屏幕录制授权后的自动重启只调度一次（static 跨 State 重建保持，
-  // 重启 app 后新进程重新计数）。
-  static bool _restartScheduled = false;
   var watchIsCanRecordAudio = false;
   Timer? _updateTimer;
   bool isCardClosed = false;
@@ -484,19 +481,6 @@ class _DesktopHomePageState extends State<DesktopHomePage>
             () async {
           bind.mainIsCanScreenRecording(prompt: true);
           watchIsCanScreenRecording = true;
-          // 定制：屏幕录制授权后当前进程不热加载，必须重启 app 才生效。
-          // 延时 6s 等用户处理完系统弹窗，然后自动重启（GUI + --server 一起
-          // 重启，三个权限视角全部刷新），恢复"装完依次授完即用"的原体验。
-          // static 标志保证一次运行只调度一次重启；重启后新 State 重新计数，
-          // 若授权仍未生效用户再点一次配置即可再次调度。
-          if (!_restartScheduled) {
-            _restartScheduled = true;
-            Future.delayed(const Duration(seconds: 6), () {
-              if (mounted) {
-                bind.mainRestartApp();
-              }
-            });
-          }
         }, help: 'Help', link: translate("doc_mac_permission"));
       } else if (!isOutgoingOnly && !bind.mainIsProcessTrusted(prompt: false)) {
         return buildInstallCard("Permissions", "config_acc", "Configure",

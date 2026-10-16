@@ -116,48 +116,6 @@ pub fn is_can_screen_recording(prompt: bool) -> bool {
     autoreleasepool(|| unsafe_is_can_screen_recording(prompt))
 }
 
-// 定制：首次配置场景下清除“僵尸授权”记录。
-// 整包安装（换主程序）后，Accessibility / ListenEvent 的旧授权记录按 bundle id
-// 残留（auth=2，系统与 preflight API 都认为已授权），但对换了主程序的新 app
-// 实际已失效——首页对应权限卡片不显示、用到输入注入时系统突然补弹授权，
-// 远程被控表现为“看得到但控不了/连不上”。
-// ScreenCapture 未授权或当前进程视角未生效 = 首次配置场景（新装/整包后首次
-// 打开、或授权后尚未重启进程），此时把另两项记录清掉让首页重新依次显示三张
-// 权限卡片；ScreenCapture 已授权 = 正常使用状态，不动任何记录。
-pub fn reset_stale_permissions_if_first_setup() {
-    if is_can_screen_recording(false) {
-        return;
-    }
-    for service in ["Accessibility", "ListenEvent"] {
-        let _ = std::process::Command::new("/usr/bin/tccutil")
-            .arg("reset")
-            .arg(service)
-            .arg("com.carriez.rustdesk")
-            .spawn();
-    }
-}
-
-// 定制：重启 app（GUI 与被控 agent 一起重启）。
-// 屏幕录制授权后当前进程不热更新（授权发生在进程启动后则始终不生效），必须
-// 重启才刷新权限视角；--server 由 LaunchAgent 独立管理，GUI 退出不会带动它，
-// 所以显式 kickstart。
-pub fn restart_app() {
-    let _ = std::process::Command::new("open")
-        .arg("-n")
-        .arg(&format!("/Applications/{}.app", crate::get_app_name()))
-        .spawn();
-    hbb_common::sleep(1.5);
-    let uid = unsafe { hbb_common::libc::getuid() };
-    let _ = std::process::Command::new("launchctl")
-        .arg("kickstart")
-        .arg("-k")
-        .arg(&format!("gui/{}/com.carriez.RustDesk_server", uid))
-        .spawn();
-    hbb_common::sleep(0.3);
-    quit_gui();
-    std::process::exit(0);
-}
-
 // macOS >= 10.15
 // https://stackoverflow.com/questions/56597221/detecting-screen-recording-settings-on-macos-catalina/
 // remove just one app from all the permissions: tccutil reset All com.carriez.rustdesk

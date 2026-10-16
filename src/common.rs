@@ -130,11 +130,6 @@ pub fn global_init() -> bool {
             crate::server::wayland::init();
         }
     }
-    // 定制：GUI 启动时若处于首次配置场景（屏幕录制未授权/未生效），清掉辅助
-    // 功能与输入监控的僵尸授权记录，让首页重新依次显示三张权限卡片——
-    // 恢复“安装完打开就依次申请三个权限”的原体验。
-    #[cfg(target_os = "macos")]
-    crate::platform::macos::reset_stale_permissions_if_first_setup();
     true
 }
 
