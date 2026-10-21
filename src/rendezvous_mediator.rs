@@ -317,6 +317,13 @@ impl RendezvousMediator {
                                 old_latency = 0;
                             }
                         }
+                        // Some firewalls drop the rendezvous reply, so request_pk
+                        // never arrives and RegisterPk is never sent. RegisterPk is
+                        // one-way: the server writes our address on receipt. Send it
+                        // proactively while registration keeps timing out.
+                        if timeout && fails >= MAX_FAILS1 && fails % 4 == 0 {
+                            rz.register_pk(Sink::Framed(&mut socket, &addr)).await?;
+                        }
                         rz.register_peer(Sink::Framed(&mut socket, &addr)).await?;
                         last_register_sent = now;
                     }
