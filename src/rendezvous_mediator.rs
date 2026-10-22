@@ -209,7 +209,10 @@ impl RendezvousMediator {
     pub async fn start_udp(server: ServerPtr, host: String) -> ResultType<()> {
         let host = check_port(&host, RENDEZVOUS_PORT);
         log::info!("start udp: {host}");
-        let (mut socket, mut addr) = new_udp_for(&host, CONNECT_TIMEOUT).await?;
+        // 定制：同一域名可能同时解析出 A/AAAA，按可达性择优，避免选中不通的那个。
+        // rz.host 仍保留原串，供 rebind 与延迟统计使用。
+        let target = crate::net_target::pick_reachable(&host).await;
+        let (mut socket, mut addr) = new_udp_for(&target, CONNECT_TIMEOUT).await?;
         let mut rz = Self {
             addr: addr.clone(),
             host: host.clone(),
@@ -305,7 +308,9 @@ impl RendezvousMediator {
                                 if last_dns_check.elapsed().as_millis() as i64 > DNS_INTERVAL {
                                     // in some case of network reconnect (dial IP network),
                                     // old UDP socket not work any more after network recover
-                                    if let Some((s, new_addr)) = socket_client::rebind_udp_for(&rz.host).await? {
+                                    // 定制：重新择优（网络环境可能已变），而不是沿用解析顺序的第一个。
+                                    let rebind_target = crate::net_target::pick_reachable(&rz.host).await;
+                                    if let Some((s, new_addr)) = socket_client::rebind_udp_for(&rebind_target).await? {
                                         socket = s;
                                         rz.addr = new_addr.clone();
                                         addr = new_addr;
@@ -425,7 +430,9 @@ impl RendezvousMediator {
     pub async fn start_tcp(server: ServerPtr, host: String) -> ResultType<()> {
         let host = check_port(&host, RENDEZVOUS_PORT);
         log::info!("start tcp: {}", hbb_common::websocket::check_ws(&host));
-        let mut conn = connect_tcp(host.clone(), CONNECT_TIMEOUT).await?;
+        // 定制：同 start_udp，按可达性择优（IPv4/IPv6 双栈环境下避免选到不通的一侧）。
+        let target = crate::net_target::pick_reachable(&host).await;
+        let mut conn = connect_tcp(target, CONNECT_TIMEOUT).await?;
         let key = crate::get_key(true).await;
         crate::secure_tcp(&mut conn, &key).await?;
         let mut rz = Self {

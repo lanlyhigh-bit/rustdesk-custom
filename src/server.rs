@@ -325,11 +325,10 @@ async fn create_relay_connection_(
     ipv4: bool,
     meta: ConnectionMeta,
 ) -> ResultType<()> {
-    let mut stream = socket_client::connect_tcp(
-        socket_client::ipv4_to_ipv6(crate::check_port(relay_server, RELAY_PORT), ipv4),
-        CONNECT_TIMEOUT,
-    )
-    .await?;
+    // 定制：relay 地址同样可能是「域名 + 多地址」，先按可达性择优再连。
+    let relay_target = socket_client::ipv4_to_ipv6(crate::check_port(relay_server, RELAY_PORT), ipv4);
+    let relay_target = crate::net_target::pick_reachable(&relay_target).await;
+    let mut stream = socket_client::connect_tcp(relay_target, CONNECT_TIMEOUT).await?;
     let mut msg_out = RendezvousMessage::new();
     let licence_key = crate::get_key(true).await;
     msg_out.set_request_relay(RequestRelay {
