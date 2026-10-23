@@ -51,6 +51,14 @@ lazy_static::lazy_static! {
 static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
 static MANUAL_RESTARTED: AtomicBool = AtomicBool::new(false);
 static SENT_REGISTER_PK: AtomicBool = AtomicBool::new(false);
+// 定制（2026-10-23）：UDP 注册持续失败后自动改走 TCP 注册。hbbs 在 21116 同时
+// 监听 TCP，上游 use_ws / 禁 UDP 部署走的就是这条路径，punch/relay 在 TCP 通道
+// 同样可用。触发：start_udp 连续 UDP_FAILS_FOR_TCP 次无回复（自建服务器
+// reg_timeout 恒为 3s，60 次 ≈ 3 分钟）。真实场景：办公防火墙只放行 TCP、
+// IPv6 临时地址轮换后 socket 源失效且 rebind 未自愈——两种情况下 TCP 通常仍通。
+static FORCE_TCP_AFTER_UDP_FAIL: AtomicBool = AtomicBool::new(false);
+const UDP_FAILS_FOR_TCP: i64 = 60;
+const ERR_UDP_FALLBACK: &str = "udp register kept failing, switch to tcp";
 pub(crate) static NEEDS_DEPLOY: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "android")]
 static NOTIFIED_NEEDS_DEPLOY: AtomicBool = AtomicBool::new(false);
@@ -302,6 +310,11 @@ impl RendezvousMediator {
                     if timeout || (last_register_sent.is_none() && expired) {
                         if timeout {
                             fails += 1;
+                            // 定制：保险丝——UDP 连续无回复到阈值即放弃本轮 UDP，
+                            // 让 start() 切换 TCP 注册（hbbs 21116/tcp 同样监听注册服务）。
+                            if fails >= UDP_FAILS_FOR_TCP {
+                                bail!("{}", ERR_UDP_FALLBACK);
+                            }
                             if fails >= MAX_FAILS2 {
                                 Config::update_latency(&host, -1);
                                 old_latency = 0;
@@ -494,10 +507,19 @@ impl RendezvousMediator {
             || Config::is_proxy()
             || use_ws()
             || crate::is_udp_disabled()
+            // 定制：UDP 通道已证实不通（本进程内连续失败到阈值），保持走 TCP 注册，
+            // 保证被控端始终可被连接。重启 app 复位回 UDP 优先。
+            || FORCE_TCP_AFTER_UDP_FAIL.load(Ordering::SeqCst)
         {
-            Self::start_tcp(server, host).await
-        } else {
-            Self::start_udp(server, host).await
+            return Self::start_tcp(server, host).await;
+        }
+        match Self::start_udp(server, host).await {
+            Err(err) if err.to_string().contains(ERR_UDP_FALLBACK) => {
+                log::warn!("{err}; switching this run to tcp registration");
+                FORCE_TCP_AFTER_UDP_FAIL.store(true, Ordering::SeqCst);
+                Err(err)
+            }
+            other => other,
         }
     }
 
