@@ -59,6 +59,8 @@ static SENT_REGISTER_PK: AtomicBool = AtomicBool::new(false);
 static FORCE_TCP_AFTER_UDP_FAIL: AtomicBool = AtomicBool::new(false);
 const UDP_FAILS_FOR_TCP: i64 = 60;
 const ERR_UDP_FALLBACK: &str = "udp register kept failing, switch to tcp";
+// 定制：request_pk 之后允许补发 RegisterPk 的最大次数（每次一个心跳周期）。
+const PK_RETRY_MAX: u8 = 5;
 pub(crate) static NEEDS_DEPLOY: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "android")]
 static NOTIFIED_NEEDS_DEPLOY: AtomicBool = AtomicBool::new(false);
@@ -112,6 +114,15 @@ pub struct RendezvousMediator {
     host: String,
     host_prefix: String,
     keep_alive: i32,
+    // 定制（2026-10-26）：待重发的 RegisterPk 次数。上游 hbbs 在 ip_change
+    // （客户端切换网络路径，例如断开 WG 改走办公网 IPv6）时，update_addr 不会
+    // 更新 last_reg_time，只回 request_pk=true——服务器的在线计时器此后完全
+    // 依赖这一次 RegisterPk 触发的 update_pk 续期。而上游只发一次 RegisterPk：
+    // 若它恰好在路由收敛的瞬间丢失/被拒，socket_addr 就永远停留在旧 IP，
+    // 之后每次 RegisterPeer 都被判 ip_change → 永远 request_pk=true →
+    // last_reg_time 永不刷新（30s 后 punch 回 OFFLINE）——表现为「自己显示在线、
+    // 别人却连不上」。这里把它改成可重发，确保握手最终完成。
+    pk_retry: u8,
 }
 
 impl RendezvousMediator {
@@ -226,6 +237,7 @@ impl RendezvousMediator {
             host: host.clone(),
             host_prefix: Self::get_host_prefix(&host),
             keep_alive: crate::DEFAULT_KEEP_ALIVE,
+            pk_retry: 0,
         };
 
         let mut timer = crate::rustdesk_interval(interval(crate::TIMER_OUT));
@@ -309,8 +321,7 @@ impl RendezvousMediator {
                     }
                     if timeout || (last_register_sent.is_none() && expired) {
                         if timeout {
-                            fails += 1;
-                            // 定制：保险丝——UDP 连续无回复到阈值即放弃本轮 UDP，
+                            fails += 1;                            // 定制：保险丝——UDP 连续无回复到阈值即放弃本轮 UDP，
                             // 让 start() 切换 TCP 注册（hbbs 21116/tcp 同样监听注册服务）。
                             if fails >= UDP_FAILS_FOR_TCP {
                                 bail!("{}", ERR_UDP_FALLBACK);
@@ -343,6 +354,14 @@ impl RendezvousMediator {
                             rz.register_pk(Sink::Framed(&mut socket, &addr)).await?;
                         }
                         rz.register_peer(Sink::Framed(&mut socket, &addr)).await?;
+                        // 定制：request_pk 握手尚未完成（服务器已要求重新登记公钥，
+                        // 但 RegisterPk 还没被确认）时，每个注册周期补发一次
+                        // RegisterPk，最多 PK_RETRY_MAX 次。上游这里只发一次，
+                        // 丢一次就会让服务器端 last_reg_time 永远不续期。
+                        if rz.pk_retry > 0 {
+                            rz.pk_retry -= 1;
+                            rz.register_pk(Sink::Framed(&mut socket, &addr)).await?;
+                        }
                         last_register_sent = now;
                     }
                 }
@@ -364,6 +383,10 @@ impl RendezvousMediator {
                 update_latency();
                 if rpr.request_pk {
                     log::info!("request_pk received from {}", self.host);
+                    // 定制：登记补发次数（见 RendezvousMediator::pk_retry 注释）。
+                    // 上游这里只发一次 RegisterPk，一旦丢失，服务器端 last_reg_time
+                    // 永不续期（自己显示在线、别人连不上）。由主循环补发兜底。
+                    self.pk_retry = PK_RETRY_MAX;
                     self.register_pk(sink).await?;
                 }
             }
@@ -375,6 +398,8 @@ impl RendezvousMediator {
                         Config::set_host_key_confirmed(&self.host_prefix, true);
                         *SOLVING_PK_MISMATCH.lock().await = "".to_owned();
                         NEEDS_DEPLOY.store(false, Ordering::SeqCst);
+                        // 定制：握手已完成，停止补发 RegisterPk。
+                        self.pk_retry = 0;
                         #[cfg(target_os = "android")]
                         reset_needs_deploy_notification();
                     }
@@ -453,6 +478,7 @@ impl RendezvousMediator {
             host: host.clone(),
             host_prefix: Self::get_host_prefix(&host),
             keep_alive: crate::DEFAULT_KEEP_ALIVE,
+            pk_retry: 0,
         };
         let mut timer = crate::rustdesk_interval(interval(crate::TIMER_OUT));
         let mut last_register_sent: Option<Instant> = None;
