@@ -70,3 +70,4 @@ flutter/web/
 /android_libsodium/
 # 项目工作记忆，仅本机保留
 /.workbuddy/
+/.workbuddy-ai/
