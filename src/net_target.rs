@@ -49,14 +49,21 @@ pub async fn pick_reachable(target: &str) -> String {
             (idx, addr, ok)
         }
     });
-    let mut best: Option<(usize, SocketAddr)> = None;
+    // 定制（2026-10-27）：本项目为纯 IPv6 单栈部署，全局 IPv6 候选优先。
+    // 否则一旦某个上游 DNS 仍返回 A 记录，就会把连接拽回 IPv4（进而注册成
+    // 私网地址、打洞失效）。
+    let mut best: Option<(bool, usize, SocketAddr)> = None;
     for (idx, addr, ok) in join_all(probes).await {
-        if ok && best.map(|(i, _)| idx < i).unwrap_or(true) {
-            best = Some((idx, addr));
+        if !ok {
+            continue;
+        }
+        let key = (!addr.is_ipv6(), idx);
+        if best.map(|(b, i, _)| key < (b, i)).unwrap_or(true) {
+            best = Some((key.0, key.1, addr));
         }
     }
     match best {
-        Some((idx, addr)) => {
+        Some((_, idx, addr)) => {
             log::info!(
                 "pick_reachable: {target} -> {addr} (candidate {} of {})",
                 idx + 1,

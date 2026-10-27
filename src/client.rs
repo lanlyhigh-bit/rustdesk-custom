@@ -304,7 +304,11 @@ impl Client {
         };
 
         if crate::get_ipv6_punch_enabled() {
-            crate::test_ipv6().await;
+            // 定制（2026-10-27）：等探测完成，否则下面 get_ipv6_socket() 拿到的
+            // 可能仍是上一轮的旧地址（甚至 None），打洞会用到失效源地址。
+            if let Some(job) = crate::test_ipv6().await {
+                job.await.ok();
+            }
         }
 
         let (stop_udp_tx, stop_udp_rx) = oneshot::channel::<()>();

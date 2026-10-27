@@ -54,10 +54,12 @@ static SENT_REGISTER_PK: AtomicBool = AtomicBool::new(false);
 // 定制（2026-10-23）：UDP 注册持续失败后自动改走 TCP 注册。hbbs 在 21116 同时
 // 监听 TCP，上游 use_ws / 禁 UDP 部署走的就是这条路径，punch/relay 在 TCP 通道
 // 同样可用。触发：start_udp 连续 UDP_FAILS_FOR_TCP 次无回复（自建服务器
-// reg_timeout 恒为 3s，60 次 ≈ 3 分钟）。真实场景：办公防火墙只放行 TCP、
+// reg_timeout 恒为 3s）。真实场景：办公防火墙只放行 TCP、
 // IPv6 临时地址轮换后 socket 源失效且 rebind 未自愈——两种情况下 TCP 通常仍通。
+// 定制（2026-10-27）：60 次（≈3 分钟）对"纯 IPv6 + 频繁换 AP"的部署太迟钝，
+// 换网络后要卡三分钟才降级；降到 10 次（≈30 秒），先保证可用再谈优劣。
 static FORCE_TCP_AFTER_UDP_FAIL: AtomicBool = AtomicBool::new(false);
-const UDP_FAILS_FOR_TCP: i64 = 60;
+const UDP_FAILS_FOR_TCP: i64 = 10;
 const ERR_UDP_FALLBACK: &str = "udp register kept failing, switch to tcp";
 // 定制：request_pk 之后允许补发 RegisterPk 的最大次数（每次一个心跳周期）。
 const PK_RETRY_MAX: u8 = 5;
@@ -246,7 +248,9 @@ impl RendezvousMediator {
         let mut reg_timeout = MIN_REG_TIMEOUT;
         const MAX_FAILS1: i64 = 2;
         const MAX_FAILS2: i64 = 4;
-        const DNS_INTERVAL: i64 = 60_000;
+        // 定制（2026-10-27）：原 60s。换网络（漫游换 AP / IPv6 前缀变化）后旧
+        // socket 的源地址失效，rebind 是唯一的恢复手段，闸门太长等于长时间黑洞。
+        const DNS_INTERVAL: i64 = 15_000;
         let mut fails = 0;
         let mut last_register_resp: Option<Instant> = None;
         let mut last_register_sent: Option<Instant> = None;
@@ -989,7 +993,11 @@ async fn start_ipv6(
     server: ServerPtr,
     meta: ConnectionMeta,
 ) -> bytes::Bytes {
-    crate::test_ipv6().await;
+    // 定制（2026-10-27）：上游丢弃了 test_ipv6 返回的 JoinHandle，探测还没完成就
+    // 取 socket，必然拿到 None（首次打洞尤其明显）。这里等它完成再取。
+    if let Some(job) = crate::test_ipv6().await {
+        job.await.ok();
+    }
     if let Some((socket, local_addr_v6)) = crate::get_ipv6_socket().await {
         let server = server.clone();
         tokio::spawn(async move {

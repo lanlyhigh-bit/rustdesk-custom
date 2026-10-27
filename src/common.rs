@@ -1116,6 +1116,14 @@ pub fn get_local_option(key: &str) -> String {
     let v = LocalConfig::get_option(key);
     if key == keys::OPTION_ENABLE_UDP_PUNCH || key == keys::OPTION_ENABLE_IPV6_PUNCH {
         if v.is_empty() {
+            // 定制（2026-10-27）：本项目是「自建服务器 + 纯 IPv6 单栈」。上游对
+            // 非公共服务器把打洞默认关成 "N"，导致 P2P 从不启用、流量全走中继；
+            // 中继只有一条流，换 AP / 前缀变化时必断，且延迟明显更高。
+            // IPv6 无 NAT，打洞没有副作用（也不触及 IPv4），这里对自建服务器
+            // 默认开启；用户在设置里显式设置 N 仍然优先生效。
+            if key == keys::OPTION_ENABLE_IPV6_PUNCH {
+                return "Y".to_owned();
+            }
             if !is_public(&Config::get_rendezvous_server()) {
                 return "N".to_owned();
             }
@@ -2458,9 +2466,36 @@ pub async fn test_nat_ipv4() -> ResultType<(SocketAddr, String)> {
     };
 }
 
+// 定制（2026-10-27）：纯 IPv6 部署的探测目标。原实现只认 STUNS_V6[0]
+// （stun.l.google.com），国内解析不出 IPv6 时整体放弃，socket_addr_v6 恒为空，
+// P2P 永远退化成中继。这里按「自建服务器 → 国内可达公共 IPv6」给出候选：
+// UDP connect 只让内核选定源地址、不发包，因此不要求目标真的回包。
+fn ipv6_probe_targets() -> Vec<SocketAddr> {
+    let mut out = Vec::new();
+    for host in Config::get_rendezvous_servers() {
+        let host = crate::check_port(&host, RENDEZVOUS_PORT);
+        if let Ok(addrs) = host.to_socket_addrs() {
+            out.extend(addrs.filter(|x| x.is_ipv6()));
+        }
+    }
+    // 阿里云公共 DNS 的 IPv6 地址：国内可达，只用来触发源地址选择
+    out.push(SocketAddr::from((
+        [0x2400, 0x3200, 0, 0, 0, 0, 0, 1],
+        53,
+    )));
+    out
+}
+
 async fn test_bind_ipv6() -> ResultType<SocketAddr> {
     let local_addr = SocketAddr::from(([0u16; 8], 0)); // [::]:0
     let socket = UdpSocket::bind(local_addr).await?;
+    // 定制（2026-10-27）：优先用可达目标选源地址，全部失败才回落到公共 STUN。
+    for target in ipv6_probe_targets() {
+        if socket.connect(target).await.is_ok() {
+            log::debug!("IPv6 source address selected via {}", target);
+            return Ok(socket.local_addr()?);
+        }
+    }
     let addr = STUNS_V6[0]
         .to_socket_addrs()?
         .filter(|x| x.is_ipv6())
@@ -2476,11 +2511,13 @@ async fn test_bind_ipv6() -> ResultType<SocketAddr> {
 }
 
 pub async fn test_ipv6() -> Option<tokio::task::JoinHandle<()>> {
+    // 定制（2026-10-27）：纯 IPv6 部署下地址/前缀变化后必须尽快重新探测，
+    // 60s 的节流会让打洞在切换网络后最多一分钟内仍然使用失效源地址。
     if PUBLIC_IPV6_ADDR
         .lock()
         .unwrap()
         .1
-        .map(|x| x.elapsed().as_secs() < 60)
+        .map(|x| x.elapsed().as_secs() < 10)
         .unwrap_or(false)
     {
         return None;
