@@ -115,7 +115,12 @@ android {
       release {
         keyAlias keystoreProperties['keyAlias']
         keyPassword keystoreProperties['keyPassword']
-        storeFile keystoreProperties['storeFile'] ? file(keystoreProperties['storeFile']) : null
+        // 定制（2026-10-27）：改用 rootProject 解析相对路径。
+        // Java 的 Properties.load(InputStream) 固定按 ISO-8859-1 解码，key.properties
+        // 里一旦写绝对路径且路径含中文（仓库已迁到 Documents/项目），中文就会变成
+        // é¡¹ç® 之类的乱码，gradle 报 keystore not found。改成相对路径 + 以
+        // flutter/android 为基准，仓库搬到哪都不会再断。
+        storeFile keystoreProperties['storeFile'] ? rootProject.file(keystoreProperties['storeFile']) : null
         storePassword keystoreProperties['storePassword']
       }
     }
