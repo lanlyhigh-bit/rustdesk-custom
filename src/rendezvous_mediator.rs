@@ -1,7 +1,7 @@
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI64, Ordering},
         Arc, RwLock,
     },
     time::{Duration, Instant},
@@ -16,6 +16,7 @@ use hbb_common::{
         self, keys::*, option2bool, use_ws, Config, CONNECT_TIMEOUT, REG_INTERVAL, RENDEZVOUS_PORT,
     },
     futures::future::join_all,
+    get_time,
     log,
     protobuf::Message as _,
     rendezvous_proto::*,
@@ -52,13 +53,27 @@ static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
 static MANUAL_RESTARTED: AtomicBool = AtomicBool::new(false);
 static SENT_REGISTER_PK: AtomicBool = AtomicBool::new(false);
 // 定制（2026-10-23）：UDP 注册持续失败后自动改走 TCP 注册。hbbs 在 21116 同时
-// 监听 TCP，上游 use_ws / 禁 UDP 部署走的就是这条路径，punch/relay 在 TCP 通道
-// 同样可用。触发：start_udp 连续 UDP_FAILS_FOR_TCP 次无回复（自建服务器
-// reg_timeout 恒为 3s）。真实场景：办公防火墙只放行 TCP、
-// IPv6 临时地址轮换后 socket 源失效且 rebind 未自愈——两种情况下 TCP 通常仍通。
-// 定制（2026-10-27）：60 次（≈3 分钟）对"纯 IPv6 + 频繁换 AP"的部署太迟钝，
+// 监听 TCP，上游 use_ws / 禁 UDP 部署走的就是这条路径。触发：start_udp 连续
+// UDP_FAILS_FOR_TCP 次无回复（自建服务器 reg_timeout 恒为 3s）。真实场景：
+// 办公防火墙只放行 TCP、IPv6 临时地址轮换后 socket 源失效且 rebind 未自愈。
+// 定制（2026-10-27）：60 次（≈3 分钟）对「纯 IPv6 + 频繁换 AP」的部署太迟钝，
 // 换网络后要卡三分钟才降级；降到 10 次（≈30 秒），先保证可用再谈优劣。
-static FORCE_TCP_AFTER_UDP_FAIL: AtomicBool = AtomicBool::new(false);
+//
+// ★ 定制（2026-10-27）二次修正：这个兜底**不能是永久锁存**。
+// RegisterPeer 不携带 socket_addr，hbbs 记的是「收到这条消息的那条通道」的源地址；
+// 一旦改走 TCP，服务器记下的就是 TCP 的 IP:端口。对端拿这个地址去打洞，打的是
+// 一个没有 UDP 监听者的端口 ⇒ 必败 ⇒ 永久中继（延迟、抗抖动都远差于 P2P）。
+// 被控端是长驻守护进程（macOS 上是 root LaunchDaemon，uptime 以周计），
+// 一次换网就会永久退化成中继，直到进程重启——正好命中「换 AP 后变慢」的现象。
+// 因此改为**带指数退避的定时重试**：退避到点就再试一次 UDP，成功了退避复位。
+// 但只在本进程内「UDP 曾经通过」时才重试：否则就是防火墙真的不放行 UDP，
+// 反复重试等于每隔一段时间主动断开注册 30 秒，比永久 TCP 更糟。
+static UDP_RETRY_AT: AtomicI64 = AtomicI64::new(0); // 时钟(ms)早于此值走 TCP；0=未锁存，i64::MAX=永久
+static UDP_RETRY_DELAY: AtomicI64 = AtomicI64::new(UDP_RETRY_BASE_MS);
+static UDP_EVER_OK: AtomicBool = AtomicBool::new(false);
+static UDP_LAST_OK_AT: AtomicI64 = AtomicI64::new(0);
+const UDP_RETRY_BASE_MS: i64 = 60_000;
+const UDP_RETRY_MAX_MS: i64 = 30 * 60_000;
 const UDP_FAILS_FOR_TCP: i64 = 10;
 const ERR_UDP_FALLBACK: &str = "udp register kept failing, switch to tcp";
 // 定制：request_pk 之后允许补发 RegisterPk 的最大次数（每次一个心跳周期）。
@@ -254,12 +269,18 @@ impl RendezvousMediator {
         let mut fails = 0;
         let mut last_register_resp: Option<Instant> = None;
         let mut last_register_sent: Option<Instant> = None;
-        let mut last_dns_check = Instant::now();
+        // 定制（2026-10-27）：初始化为「已经过期」，让第一次 rebind 立刻可用。
+        // 上游从 now() 起算，必须等满 DNS_INTERVAL 才会 rebind，而 30 秒就降级 TCP，
+        // 等于整轮只来得及重绑一次；提前到 fails>=4（≈12 秒）就能多一次恢复机会。
+        let mut last_dns_check = Instant::now() - Duration::from_millis(DNS_INTERVAL as u64);
         let mut old_latency = 0;
         let mut ema_latency = 0;
         loop {
             let mut update_latency = || {
                 last_register_resp = Some(Instant::now());
+                // 定制：记录「UDP 确实通过」，给 TCP 兜底的退避策略做判据。
+                UDP_EVER_OK.store(true, Ordering::SeqCst);
+                UDP_LAST_OK_AT.store(get_time(), Ordering::SeqCst);
                 fails = 0;
                 reg_timeout = MIN_REG_TIMEOUT;
                 let mut latency = last_register_sent
@@ -533,20 +554,43 @@ impl RendezvousMediator {
     pub async fn start(server: ServerPtr, host: String) -> ResultType<()> {
         log::info!("start rendezvous mediator of {}", host);
         //If the investment agent type is http or https, then tcp forwarding is enabled.
+        let retry_at = UDP_RETRY_AT.load(Ordering::SeqCst);
+        // 0 = 从未降级过；i64::MAX = 已判定 UDP 不可用（永久 TCP）；其余 = 退避截止时刻
+        let udp_retry_due = retry_at > 0 && get_time() >= retry_at;
         if (cfg!(debug_assertions) && option_env!("TEST_TCP").is_some())
             || Config::is_proxy()
             || use_ws()
             || crate::is_udp_disabled()
-            // 定制：UDP 通道已证实不通（本进程内连续失败到阈值），保持走 TCP 注册，
-            // 保证被控端始终可被连接。重启 app 复位回 UDP 优先。
-            || FORCE_TCP_AFTER_UDP_FAIL.load(Ordering::SeqCst)
+            // 定制：UDP 注册连续失败（见 UDP_FAILS_FOR_TCP），退避期内走 TCP 注册，
+            // 保证被控端始终可被连接；退避到点后再试一次 UDP（见 UDP_RETRY_AT）。
+            || (retry_at > 0 && !udp_retry_due)
         {
             return Self::start_tcp(server, host).await;
         }
+        let udp_started_at = get_time();
         match Self::start_udp(server, host).await {
             Err(err) if err.to_string().contains(ERR_UDP_FALLBACK) => {
-                log::warn!("{err}; switching this run to tcp registration");
-                FORCE_TCP_AFTER_UDP_FAIL.store(true, Ordering::SeqCst);
+                // 定制：本轮若曾收到过服务器回复，说明 UDP 链路本身是通的，这次失败
+                // 多半是换网 / 地址轮换后的临时状态 ⇒ 退避复位，很快重试。
+                // 整轮一次回复都没有 ⇒ 大概率防火墙不放行 UDP ⇒ 退避逐次翻倍直至永久 TCP。
+                let had_ok = UDP_LAST_OK_AT.load(Ordering::SeqCst) >= udp_started_at;
+                if !UDP_EVER_OK.load(Ordering::SeqCst) {
+                    UDP_RETRY_AT.store(i64::MAX, Ordering::SeqCst);
+                    log::warn!("{err}; udp never worked in this process, staying on tcp");
+                } else {
+                    let cur = UDP_RETRY_DELAY
+                        .load(Ordering::SeqCst)
+                        .clamp(UDP_RETRY_BASE_MS, UDP_RETRY_MAX_MS);
+                    let delay = if had_ok { UDP_RETRY_BASE_MS } else { cur };
+                    let next = (delay * 2).clamp(UDP_RETRY_BASE_MS, UDP_RETRY_MAX_MS);
+                    UDP_RETRY_DELAY.store(next, Ordering::SeqCst);
+                    UDP_RETRY_AT.store(get_time() + delay, Ordering::SeqCst);
+                    log::warn!(
+                        "{err}; using tcp for now, retry udp in {}s (had_ok={})",
+                        delay / 1000,
+                        had_ok
+                    );
+                }
                 Err(err)
             }
             other => other,
