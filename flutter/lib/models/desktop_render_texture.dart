@@ -151,6 +151,8 @@ class TextureModel {
     debugPrint("setTextureType: display=$display, isGpuTexture=$gpuTexture");
     ensureControl(display);
     _control[display]?.setTextureType(gpuTexture: gpuTexture);
+    // 定制：纹理已就绪，强制本窗口重绘一次，避免复用窗口重连后整屏黑。
+    forceRemoteWindowRedrawOnce();
     // For versions that do not support multiple displays, the display parameter is always 0, need set type of current display
     final ffi = parent.target;
     if (ffi == null) return;

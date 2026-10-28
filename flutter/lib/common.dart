@@ -3488,6 +3488,26 @@ tryMoveToScreenAndSetFullscreen(Rect? screenRect) async {
   });
 }
 
+/// 定制：复用隐藏子窗口重连后，Flutter engine 不会重新合成新的纹理层，
+/// 控制端表现为整屏黑，只有窗口尺寸变化才会逼它重绘一次（用户手动缩放即可恢复）。
+/// 这里在收到「纹理已写入」事件时，对该窗口做一次 1px 的尺寸抖动并立刻还原，
+/// 等价于替用户缩放一次窗口；不改窗口生命周期、状态与最大化/全屏属性。
+Future<void> forceRemoteWindowRedrawOnce() async {
+  if (!isMacOS || isWeb) return;
+  final id = kWindowId;
+  if (id == null || id == kMainWindowId) return;
+  try {
+    final wc = WindowController.fromWindowId(id);
+    final frame = await wc.getFrame();
+    await wc.setFrame(
+        Rect.fromLTWH(frame.left, frame.top, frame.width + 1, frame.height));
+    await Future.delayed(const Duration(milliseconds: 30));
+    await wc.setFrame(frame);
+  } catch (e) {
+    debugPrint('forceRemoteWindowRedrawOnce failed: $e');
+  }
+}
+
 parseParamScreenRect(Map<String, dynamic> params) {
   Rect? screenRect;
   if (params['screen_rect'] != null) {
