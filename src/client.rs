@@ -304,7 +304,11 @@ impl Client {
         };
 
         if crate::get_ipv6_punch_enabled() {
-            crate::test_ipv6().await;
+            // 定制（2026-10-28）：等探测完成，否则下面 get_ipv6_socket() 拿到的
+            // 可能仍是上一轮的旧地址（甚至 None），打洞会用到失效源地址。
+            if let Some(job) = crate::test_ipv6().await {
+                job.await.ok();
+            }
         }
 
         let (stop_udp_tx, stop_udp_rx) = oneshot::channel::<()>();
@@ -520,16 +524,31 @@ impl Client {
                                     udp.0 = Some(s);
                                 }
                             }
+                            // 定制（2026-10-28）：上游这里先 take 再按条件放回，条件
+                            // 不满足（hbbs 未填 socket_addr_v6）时 socket 就被永久丢弃，
+                            // 导致 Self::connect 里那条 "IPv6" 打洞分支根本不会创建，
+                            // 只剩 TCP 直连，超时后必然回落中继。这里始终保留 socket，
+                            // 并在缺 v6 字段时用 peer_addr 兜底。
                             let s = ipv6.0.take();
-                            if !ph.socket_addr_v6.is_empty() && s.is_some() {
+                            let mut v6_target: Option<SocketAddr> = None;
+                            if !ph.socket_addr_v6.is_empty() {
                                 let addr = AddrMangle::decode(&ph.socket_addr_v6);
                                 if addr.port() > 0 {
-                                    if let Some(s) = s {
-                                        allow_err!(s.connect(addr).await);
-                                        ipv6.0 = Some(s);
-                                    }
+                                    v6_target = Some(addr);
                                 }
                             }
+                            if v6_target.is_none() && peer_addr.is_ipv6() && peer_addr.port() > 0 {
+                                v6_target = Some(peer_addr);
+                            }
+                            if let (Some(sock), Some(addr)) = (s.as_ref(), v6_target) {
+                                allow_err!(sock.connect(addr).await);
+                            }
+                            log::debug!(
+                                "IPv6 punch socket kept: {}, target: {:?}",
+                                s.is_some(),
+                                v6_target
+                            );
+                            ipv6.0 = s;
                             log::info!("{} Hole Punched {} = {}", punch_type, peer, peer_addr);
                             break;
                         }

@@ -2458,9 +2458,47 @@ pub async fn test_nat_ipv4() -> ResultType<(SocketAddr, String)> {
     };
 }
 
+// 定制（2026-10-28）：v6 源地址探测目标。上游只认 stun.l.google.com，该域名
+// 在国内解析不出 AAAA 时整条 v6 路径直接失效（socket_addr_v6 恒为空 → 只能中继）。
+// 自建信令服务器必然可达，用它选源地址最可靠。
+fn ipv6_probe_targets() -> Vec<SocketAddr> {
+    let mut out = Vec::new();
+    for host in Config::get_rendezvous_servers() {
+        let host = check_port(&host, RENDEZVOUS_PORT);
+        if let Ok(addrs) = host.to_socket_addrs() {
+            out.extend(addrs.filter(|x| x.is_ipv6()));
+        }
+    }
+    out
+}
+
+fn is_global_ipv6(addr: &SocketAddr) -> bool {
+    if let std::net::IpAddr::V6(ip) = addr.ip() {
+        !ip.is_loopback()
+            && !ip.is_unspecified()
+            && !ip.is_multicast()
+            && (ip.segments()[0] & 0xe000) == 0x2000
+    } else {
+        false
+    }
+}
+
 async fn test_bind_ipv6() -> ResultType<SocketAddr> {
     let local_addr = SocketAddr::from(([0u16; 8], 0)); // [::]:0
     let socket = UdpSocket::bind(local_addr).await?;
+    // 定制（2026-10-28）：先用自建服务器选源地址。UDP connect 只让内核选定源
+    // 地址、不发包，因此不要求目标真的回包。
+    for target in ipv6_probe_targets() {
+        if socket.connect(target).await.is_err() {
+            continue;
+        }
+        if let Ok(addr) = socket.local_addr() {
+            if is_global_ipv6(&addr) {
+                log::debug!("IPv6 source address selected via {}", target);
+                return Ok(addr);
+            }
+        }
+    }
     let addr = STUNS_V6[0]
         .to_socket_addrs()?
         .filter(|x| x.is_ipv6())
@@ -2476,17 +2514,21 @@ async fn test_bind_ipv6() -> ResultType<SocketAddr> {
 }
 
 pub async fn test_ipv6() -> Option<tokio::task::JoinHandle<()>> {
+    // 定制（2026-10-28）：节流 60s → 5s。上游 60s 太长：v6 临时地址轮换 /
+    // 前缀变化后，旧地址会让 get_ipv6_socket 连续 bind 失败，最长一分钟拿不到
+    // 新地址，表现为「一直走中继，重启才恢复」。
     if PUBLIC_IPV6_ADDR
         .lock()
         .unwrap()
         .1
-        .map(|x| x.elapsed().as_secs() < 60)
+        .map(|x| x.elapsed().as_secs() < 5)
         .unwrap_or(false)
     {
         return None;
     }
     PUBLIC_IPV6_ADDR.lock().unwrap().1 = Some(Instant::now());
 
+    let mut found = false;
     match test_bind_ipv6().await {
         Ok(mut addr) => {
             if let std::net::IpAddr::V6(ip) = addr.ip() {
@@ -2497,6 +2539,7 @@ pub async fn test_ipv6() -> Option<tokio::task::JoinHandle<()>> {
                 {
                     addr.set_port(0);
                     PUBLIC_IPV6_ADDR.lock().unwrap().0 = Some(addr);
+                    found = true;
                     log::debug!("Found public IPv6 address locally: {}", addr);
                 }
             }
@@ -2504,6 +2547,11 @@ pub async fn test_ipv6() -> Option<tokio::task::JoinHandle<()>> {
         Err(e) => {
             log::warn!("Failed to bind IPv6 socket: {}", e);
         }
+    }
+    // 定制（2026-10-28）：本地已确定源地址就不再打 STUN。v6 无 NAT，STUN 只会
+    // 返回同一个地址；而节流降到 5s 后，每轮都发 STUN 在无 v6 的网络上纯属浪费。
+    if found {
+        return None;
     }
     // Interestingly, on my macOS, sometimes my ipv6 works, sometimes not (test with ping6 or https://test-ipv6.com/).
     // I checked ifconfig, could not see any difference. Both secure ipv6 and temporary ipv6 are there.
@@ -2628,7 +2676,13 @@ pub async fn get_ipv6_socket() -> Option<(Arc<UdpSocket>, bytes::Bytes)> {
 
     match UdpSocket::bind(addr).await {
         Err(err) => {
-            log::warn!("Failed to create UDP socket for IPv6: {err}");
+            // 定制（2026-10-28）：bind 失败说明缓存的地址已经不在本机（典型是
+            // Windows/macOS 的 IPv6 临时地址轮换、或前缀变化后旧地址失效）。
+            // 上游只打一条 warn 就返回 None，缓存里的死地址会一直留着，之后每次
+            // 打洞都 bind 同一个死地址、每次失败，直到进程重启。这里清掉缓存，
+            // 让下一次 test_ipv6 重新探测。
+            PUBLIC_IPV6_ADDR.lock().unwrap().0 = None;
+            log::warn!("Failed to create UDP socket for IPv6: {err}, cached addr dropped");
         }
         Ok(socket) => {
             if let Ok(local_addr_v6) = socket.local_addr() {
