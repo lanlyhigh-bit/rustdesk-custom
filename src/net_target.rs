@@ -49,14 +49,24 @@ pub async fn pick_reachable(target: &str) -> String {
             (idx, addr, ok)
         }
     });
-    let mut best: Option<(usize, SocketAddr)> = None;
+    // 定制（2026-10-28）：全局 IPv6 优先，其余按 DNS 顺序。
+    // 同一个域名常同时解析出内网 A（如 192.168.5.4，由旁路由 split DNS 给出）
+    // 和公网 AAAA。一旦 WireGuard 之类的隧道把内网网段也路由了，内网地址虽然
+    // "可达"，注册到 hbbs 时源地址却会被 SNAT 成路由器（实测 192.168.5.3），
+    // 对端拿这个地址打洞必然失败。上游 test_target 走系统选择（RFC 6724 优先
+    // IPv6），所以老版本不受影响；这里把同样的偏好显式加回来。
+    let mut best: Option<(bool, usize, SocketAddr)> = None;
     for (idx, addr, ok) in join_all(probes).await {
-        if ok && best.map(|(i, _)| idx < i).unwrap_or(true) {
-            best = Some((idx, addr));
+        if !ok {
+            continue;
+        }
+        let key = (!addr.is_ipv6(), idx);
+        if best.map(|(b, i, _)| key < (b, i)).unwrap_or(true) {
+            best = Some((key.0, key.1, addr));
         }
     }
     match best {
-        Some((idx, addr)) => {
+        Some((_, idx, addr)) => {
             log::info!(
                 "pick_reachable: {target} -> {addr} (candidate {} of {})",
                 idx + 1,
