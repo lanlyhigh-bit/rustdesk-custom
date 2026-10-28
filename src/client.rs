@@ -4403,8 +4403,14 @@ async fn udp_nat_connect(
     typ: &'static str,
     ms_timeout: u64,
 ) -> ResultType<(Stream, Option<KcpStream>, &'static str)> {
-    crate::punch_udp(socket.clone(), false)
+    // 定制（2026-10-28）：punch_udp 内部是 20s 硬上限，与这里的 ms_timeout 无关。
+    // 对端没有 UDP 监听时（典型：只有 v6、但对方没上报 socket_addr_v6），打洞
+    // 必然收不到回应，却要白等 20 秒才轮到中继接管——实测单次连接因此要 21 秒。
+    // 这里按调用方超时收紧打洞阶段，失败后尽快回落中继。
+    let punch_ms = ms_timeout.clamp(1_000, 3_000);
+    timeout(punch_ms, crate::punch_udp(socket.clone(), false))
         .await
+        .map_err(|_| anyhow!("UDP punch timed out after {punch_ms}ms"))?
         .map_err(|err| {
             log::debug!("{err}");
             anyhow!(err)
