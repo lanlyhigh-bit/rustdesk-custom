@@ -997,12 +997,14 @@ async fn start_ipv6(
     server: ServerPtr,
     meta: ConnectionMeta,
 ) -> bytes::Bytes {
-    // 定制（2026-10-28）：上游丢弃了 test_ipv6 返回的 JoinHandle，探测还没完成就
-    // 取 socket，必然拿到 None（首次打洞、以及地址轮换后的头一轮尤其明显）。
-    // 这里等它完成再取。
-    if let Some(job) = crate::test_ipv6().await {
-        job.await.ok();
-    }
+    // 定制（2026-11-05）：不再阻塞等待探测。10-28 那次 await 在探测慢时会把打洞
+    // 信令拖到 9 秒以上（实测 01:23:17 → 01:23:26）。探测挪到后台，本次只用已有
+    // 缓存；拿不到就返回空，让调用方走 peer_addr 兜底，别拖慢连接。
+    tokio::spawn(async {
+        if let Some(job) = crate::test_ipv6().await {
+            let _ = job.await;
+        }
+    });
     if let Some((socket, local_addr_v6)) = crate::get_ipv6_socket().await {
         let server = server.clone();
         tokio::spawn(async move {
