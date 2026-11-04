@@ -680,6 +680,13 @@ impl Client {
         let direct_failures = interface.get_lch().read().unwrap().direct_failures;
         let mut connect_timeout = 0;
         const MIN: u64 = 1000;
+        // 定制（2026-11-05）：直连失败过一次后，上游把预算压成 punch_time_used * 6，
+        // 再被 MIN 夹到 1 秒。1 秒内 TCP 直连与 UDP 打洞都来不及完成，于是
+        // direct_failures 永远停在 1，锁死在中继（实测 timeout 只有 1000/18000 两档）。
+        // 这里给 3~5 秒：成功时仍是毫秒级返回（select_ok 取第一个成功），
+        // 失败时最多多等几秒，换回直连的机会。
+        const MIN_AFTER_FAILURE: u64 = 3_000;
+        const MAX_AFTER_FAILURE: u64 = 5_000;
         if is_local || peer_nat_type == NatType::SYMMETRIC {
             connect_timeout = MIN;
         } else {
@@ -694,7 +701,8 @@ impl Client {
                     if my_nat_type == NatType::ASYMMETRIC as i32 {
                         connect_timeout = CONNECT_TIMEOUT;
                         if direct_failures > 0 {
-                            connect_timeout = punch_time_used * 6;
+                            connect_timeout = (punch_time_used * 6)
+                                .clamp(MIN_AFTER_FAILURE, MAX_AFTER_FAILURE);
                         }
                     } else if my_nat_type == NatType::SYMMETRIC as i32 {
                         connect_timeout = MIN;
@@ -703,6 +711,10 @@ impl Client {
                 if connect_timeout == 0 {
                     let n = if direct_failures > 0 { 3 } else { 6 };
                     connect_timeout = punch_time_used * (n as u64);
+                    if direct_failures > 0 {
+                        connect_timeout =
+                            connect_timeout.clamp(MIN_AFTER_FAILURE, MAX_AFTER_FAILURE);
+                    }
                 }
             }
             if connect_timeout < MIN {
