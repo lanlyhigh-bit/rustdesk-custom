@@ -240,18 +240,14 @@ impl LockModesHandler {
     fn new(key_event: &KeyEvent) -> Self {
         let event_caps_enabled = Self::is_modifier_enabled(key_event, ControlKey::CapsLock);
         // Do not use the following code to detect `local_caps_enabled`.
-        // Because the state of get_key_state will not affect simulation of `VIRTUAL_INPUT_STATE` in this file.
+        // Because the state of get_key_state will not affect simulation of `VIRTUAL_INPUT` in this file.
         //
         // let local_caps_enabled = VirtualInput::get_key_state(
         //     CGEventSourceStateID::CombinedSessionState,
         //     rdev::kVK_CapsLock,
         // );
-        let local_caps_enabled = unsafe {
-            let _lock = VIRTUAL_INPUT_MTX.lock();
-            VIRTUAL_INPUT_STATE
-                .as_ref()
-                .map_or(false, |input| input.capslock_down)
-        };
+        let local_caps_enabled =
+            with_virtual_input(|state| state.as_ref().map_or(false, |input| input.capslock_down));
         if event_caps_enabled && !local_caps_enabled {
             press_capslock();
         } else if !event_caps_enabled && local_caps_enabled {
@@ -533,8 +529,12 @@ pub(crate) fn clear_relative_mouse_active(conn: i32) {
 
 static EXITING: AtomicBool = AtomicBool::new(false);
 
+// Only referenced by the commented-out body of `active_mouse_()` (disabled upstream);
+// kept so that code can be restored as-is.
+#[allow(dead_code)]
 const MOUSE_MOVE_PROTECTION_TIMEOUT: Duration = Duration::from_millis(1_000);
 // Actual diff of (x,y) is (1,1) here. But 5 may be tolerant.
+#[allow(dead_code)]
 const MOUSE_ACTIVE_DISTANCE: i32 = 5;
 
 static RECORD_CURSOR_POS_RUNNING: AtomicBool = AtomicBool::new(false);
@@ -644,10 +644,29 @@ impl VirtualInputState {
     }
 }
 
+// The virtual input state lives inside the mutex instead of a `static mut` guarded by a
+// side mutex, so every access goes through the lock and no `&`/`&mut` to a mutable static
+// is ever formed (rust 2024 `static_mut_refs`).
 #[cfg(target_os = "macos")]
-static mut VIRTUAL_INPUT_MTX: Mutex<()> = Mutex::new(());
+struct VirtualInputSlot(Option<VirtualInputState>);
+
+// SAFETY: `VirtualInput` wraps a CGEventSource handle. It is only reachable through
+// `VIRTUAL_INPUT`'s lock, which serializes all access across threads; this is the same
+// guarantee the previous `static mut` + `VIRTUAL_INPUT_MTX` pair relied on.
 #[cfg(target_os = "macos")]
-static mut VIRTUAL_INPUT_STATE: Option<VirtualInputState> = None;
+unsafe impl Send for VirtualInputSlot {}
+
+#[cfg(target_os = "macos")]
+static VIRTUAL_INPUT: Mutex<VirtualInputSlot> = Mutex::new(VirtualInputSlot(None));
+
+#[cfg(target_os = "macos")]
+#[inline]
+fn with_virtual_input<R>(f: impl FnOnce(&mut Option<VirtualInputState>) -> R) -> R {
+    // A poisoned lock only means an earlier simulate panicked; the state itself is still
+    // usable, and dropping key events here would be worse than continuing.
+    let mut slot = VIRTUAL_INPUT.lock().unwrap_or_else(|e| e.into_inner());
+    f(&mut slot.0)
+}
 
 // First call set_uinput() will create keyboard and mouse clients.
 // The clients are ipc connections that must live shorter than tokio runtime.
@@ -1426,10 +1445,9 @@ pub fn handle_key(evt: &KeyEvent) {
 #[cfg(target_os = "macos")]
 #[inline]
 fn reset_input() {
-    unsafe {
-        let _lock = VIRTUAL_INPUT_MTX.lock();
-        VIRTUAL_INPUT_STATE = VirtualInputState::new();
-    }
+    with_virtual_input(|state| {
+        *state = VirtualInputState::new();
+    });
 }
 
 #[cfg(target_os = "macos")]
@@ -1474,42 +1492,39 @@ fn sim_rdev_rawkey_virtual(code: u32, keydown: bool) {
 #[inline]
 #[cfg(target_os = "macos")]
 fn simulate_(event_type: &EventType) {
-    unsafe {
-        let _lock = VIRTUAL_INPUT_MTX.lock();
-        if let Some(input) = VIRTUAL_INPUT_STATE.as_ref() {
+    with_virtual_input(|state| {
+        if let Some(input) = state.as_ref() {
             let _ = input.simulate(&event_type);
         }
-    }
+    });
 }
 
 #[inline]
 #[cfg(target_os = "macos")]
 fn press_capslock() {
     let caps_key = RdevKey::RawKey(rdev::RawKey::MacVirtualKeycode(rdev::kVK_CapsLock));
-    unsafe {
-        let _lock = VIRTUAL_INPUT_MTX.lock();
-        if let Some(input) = VIRTUAL_INPUT_STATE.as_mut() {
+    with_virtual_input(|state| {
+        if let Some(input) = state.as_mut() {
             if input.simulate(&EventType::KeyPress(caps_key)).is_ok() {
                 input.capslock_down = true;
                 key_sleep();
             }
         }
-    }
+    });
 }
 
 #[cfg(target_os = "macos")]
 #[inline]
 fn release_capslock() {
     let caps_key = RdevKey::RawKey(rdev::RawKey::MacVirtualKeycode(rdev::kVK_CapsLock));
-    unsafe {
-        let _lock = VIRTUAL_INPUT_MTX.lock();
-        if let Some(input) = VIRTUAL_INPUT_STATE.as_mut() {
+    with_virtual_input(|state| {
+        if let Some(input) = state.as_mut() {
             if input.simulate(&EventType::KeyRelease(caps_key)).is_ok() {
                 input.capslock_down = false;
                 key_sleep();
             }
         }
-    }
+    });
 }
 
 #[cfg(not(target_os = "macos"))]
