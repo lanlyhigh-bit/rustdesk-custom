@@ -1088,6 +1088,8 @@ class FfiModel with ChangeNotifier {
       bool forceRelay) {
     // Disable relative mouse mode before reconnecting to ensure cursor is released.
     parent.target?.inputModel.setRelativeMouseMode(false);
+    // 定制：新连接的首个纹理事件再强制重绘一次（见 TextureModel._redrawForced）。
+    parent.target?.textureModel.resetForcedRedraw();
     _cancelPendingMonitorRestore();
     bind.sessionReconnect(sessionId: sessionId, forceRelay: forceRelay);
     clearPermissions();

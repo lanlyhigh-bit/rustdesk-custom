@@ -3492,10 +3492,14 @@ tryMoveToScreenAndSetFullscreen(Rect? screenRect) async {
 /// 控制端表现为整屏黑，只有窗口尺寸变化才会逼它重绘一次（用户手动缩放即可恢复）。
 /// 这里在收到「纹理已写入」事件时，对该窗口做一次 1px 的尺寸抖动并立刻还原，
 /// 等价于替用户缩放一次窗口；不改窗口生命周期、状态与最大化/全屏属性。
+/// 全屏/最大化时跳过：对这两种窗口 setFrame 会把它们退回普通窗口状态。
 Future<void> forceRemoteWindowRedrawOnce() async {
   if (!isMacOS || isWeb) return;
   final id = kWindowId;
   if (id == null || id == kMainWindowId) return;
+  if (stateGlobal.fullscreen.isTrue || stateGlobal.isMaximized.isTrue) {
+    return;
+  }
   try {
     final wc = WindowController.fromWindowId(id);
     final frame = await wc.getFrame();

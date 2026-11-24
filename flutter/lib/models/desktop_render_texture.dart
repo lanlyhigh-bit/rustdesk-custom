@@ -144,15 +144,25 @@ class TextureModel {
   final Map<int, _Control> _control = {};
   final Map<int, _PixelbufferTexture> _pixelbufferRenderTextures = {};
   final Map<int, _GpuTexture> _gpuRenderTextures = {};
+  // 定制：每次连接只强制重绘一次。setTextureType 在切显示器、切编码时也会再次调用，
+  // 不需要每次都抖动窗口。新会话随 FFI 新建本对象；会话内重连由 reconnect() 调
+  // resetForcedRedraw() 复位。
+  bool _redrawForced = false;
 
   TextureModel(this.parent);
+
+  /// 定制：会话内重连前调用，让新连接的首个纹理事件再强制重绘一次。
+  void resetForcedRedraw() => _redrawForced = false;
 
   setTextureType({required int display, required bool gpuTexture}) {
     debugPrint("setTextureType: display=$display, isGpuTexture=$gpuTexture");
     ensureControl(display);
     _control[display]?.setTextureType(gpuTexture: gpuTexture);
-    // 定制：纹理已就绪，强制本窗口重绘一次，避免复用窗口重连后整屏黑。
-    forceRemoteWindowRedrawOnce();
+    // 定制：纹理首次就绪时强制本窗口重绘一次，避免复用窗口重连后整屏黑。
+    if (!_redrawForced) {
+      _redrawForced = true;
+      forceRemoteWindowRedrawOnce();
+    }
     // For versions that do not support multiple displays, the display parameter is always 0, need set type of current display
     final ffi = parent.target;
     if (ffi == null) return;
