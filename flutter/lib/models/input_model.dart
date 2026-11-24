@@ -1196,6 +1196,43 @@ class InputModel {
             .encode(modify({'id': id, 'type': 'wheel', 'y': y.toString()})));
   }
 
+  // 定制（2026-11-24）：手机双指/三指滚动按手指位移等比发送。
+  //
+  // 原来先把位移攒满一格才发一次滚轮（Windows 一格 = 3 行），滚动一跳一跳、不跟手。
+  // Windows / macOS 被控端改发像素级的 trackpad 滚动，这是被控端原生支持的路径（Windows 直接
+  // 当作 WHEEL_DELTA 分量，macOS 按像素发滚动事件），滚动量与手指位移成正比。
+  // 整体速度与原来一致：原来 1 格 = 4 / scrollSpeed 个逻辑像素。
+  // Linux 被控端的 trackpad 也是按整格处理，保留原来的整格方式。
+  double _gestureScrollUnsent = 0;
+
+  void resetGestureScroll() => _gestureScrollUnsent = 0;
+
+  void gestureScroll(double fingerDy) {
+    if (isViewOnly || isViewCamera) return;
+    syncScrollOptionsIfNeeded();
+    final platform = peerPlatform;
+    final double perPx;
+    final String type;
+    if (platform == kPeerPlatformWindows) {
+      perPx = 120 / 4 * _scrollSpeed; // WHEEL_DELTA 单位
+      type = 'trackpad';
+    } else if (platform == kPeerPlatformMacOS) {
+      perPx = 2.5 * _scrollSpeed; // 像素；macOS 一行约 10 像素
+      type = 'trackpad';
+    } else {
+      perPx = _scrollSpeed / 4; // 整格
+      type = 'wheel';
+    }
+    _gestureScrollUnsent += fingerDy * perPx;
+    final int y = _gestureScrollUnsent.truncate();
+    if (y == 0) return;
+    _gestureScrollUnsent -= y.toDouble();
+    bind.sessionSendMouse(
+        sessionId: sessionId,
+        msg: json.encode(
+            modify({'id': id, 'type': type, 'x': '0', 'y': y.toString()})));
+  }
+
   /// Reset key modifiers to false, including [shift], [ctrl], [alt] and [command].
   void resetModifiers() {
     shift = ctrl = alt = command = false;

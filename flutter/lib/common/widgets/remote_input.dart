@@ -90,7 +90,6 @@ class _RawTouchGestureDetectorRegionState
   Offset _cacheLongPressPosition = Offset(0, 0);
   // Timestamp of the last long press event.
   int _cacheLongPressPositionTs = 0;
-  double _mouseScrollIntegral = 0; // mouse scroll speed controller
   double _scale = 1;
 
   // Workaround tap down event when two fingers are used to scale(mobile)
@@ -525,21 +524,10 @@ class _RawTouchGestureDetectorRegionState
 
   get onHoldDragCancel => null;
 
-  /// Accumulates gesture scroll delta into whole wheel steps.
-  ///
-  /// Gesture delta (dy) is first scaled down by 4 (legacy three-finger
-  /// behavior), then multiplied by the gesture scroll speed ratio
-  /// ([inputModel.scrollSpeed], 0.25 .. 1.50). The fractional part is kept so
-  /// that small movements at low speed still produce wheel events over time.
+  /// Sends gesture scroll proportionally to finger travel (see
+  /// [InputModel.gestureScroll]); speed follows [inputModel.scrollSpeed].
   void _accumulateGestureScroll(double dy) {
-    // Pick up a scroll-speed change made in the settings page while connected.
-    inputModel.syncScrollOptionsIfNeeded();
-    _mouseScrollIntegral += dy / 4 * inputModel.scrollSpeed;
-    final int steps = _mouseScrollIntegral.truncate();
-    if (steps != 0) {
-      inputModel.scroll(steps);
-      _mouseScrollIntegral -= steps.toDouble();
-    }
+    inputModel.gestureScroll(dy);
   }
 
   // Two-finger vertical scroll (mobile). Disabled when the peer is an Android
@@ -547,7 +535,7 @@ class _RawTouchGestureDetectorRegionState
   onTwoFingerScrollStart(DragStartDetails d) async {
     if (isNotTouchBasedDevice()) return;
     if (ffi.ffiModel.isPeerAndroid) return;
-    _mouseScrollIntegral = 0;
+    inputModel.resetGestureScroll();
   }
 
   onTwoFingerScrollUpdate(DragUpdateDetails d) async {

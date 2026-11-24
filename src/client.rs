@@ -754,26 +754,109 @@ impl Client {
             connect_futures.push(udp_nat_connect(udp_socket_v6, "IPv6", connect_timeout).boxed());
         }
         // Run all connection attempts concurrently, return the first successful one
-        let (mut conn, kcp, mut typ) = match select_ok(connect_futures).await {
+        let mut direct_fut = select_ok(connect_futures);
+        // 定制（2026-11-24）：直连先跑 RELAY_HEAD_START_MS，还没通就并发申请中继，谁先通用谁。
+        // 实测直连成功都是个位数毫秒（7.2ms / 8.5ms），300ms 的先手足以让能直连的情况
+        // 不白白起一条中继；直连不通时省掉原来 1.5–2s 的空等。直连赢了就取消中继任务，
+        // 中继赢了直连的尝试随 direct_fut 一起丢弃。
+        const RELAY_HEAD_START_MS: u64 = 300;
+        let race_relay = !relay_server.is_empty()
+            && !interface.is_force_relay()
+            && !is_local
+            && connect_timeout > RELAY_HEAD_START_MS;
+        let mut relay_task: Option<tokio::task::JoinHandle<ResultType<Stream>>> = None;
+        let mut relay_won: Option<Stream> = None;
+        let direct_res = if race_relay {
+            match timeout(RELAY_HEAD_START_MS, &mut direct_fut).await {
+                Ok(res) => res,
+                Err(_) => {
+                    log::info!("direct not ready in {RELAY_HEAD_START_MS}ms, race relay");
+                    let peer_id_owned = peer_id.to_owned();
+                    let relay_server_owned = relay_server.to_owned();
+                    let rendezvous_server_owned = rendezvous_server.to_owned();
+                    let secure = !signed_id_pk.is_empty();
+                    let key_owned = key.to_owned();
+                    let token_owned = token.to_owned();
+                    let switch_code = interface.get_switch_code();
+                    let mut task = tokio::spawn(async move {
+                        Self::request_relay(
+                            &peer_id_owned,
+                            relay_server_owned,
+                            &rendezvous_server_owned,
+                            secure,
+                            &key_owned,
+                            &token_owned,
+                            conn_type,
+                            &switch_code,
+                        )
+                        .await
+                    });
+                    tokio::select! {
+                        res = &mut direct_fut => {
+                            if res.is_ok() {
+                                task.abort();
+                            } else {
+                                relay_task = Some(task);
+                            }
+                            res
+                        }
+                        res = &mut task => {
+                            match res {
+                                Ok(Ok(stream)) => {
+                                    relay_won = Some(stream);
+                                    Err(anyhow!("relay connected first"))
+                                }
+                                Ok(Err(err)) => {
+                                    log::warn!("racing relay failed: {err}");
+                                    direct_fut.await
+                                }
+                                Err(err) => {
+                                    log::warn!("racing relay task failed: {err}");
+                                    direct_fut.await
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            direct_fut.await
+        };
+        let (mut conn, kcp, mut typ) = match direct_res {
             Ok(conn) => (Ok(conn.0 .0), conn.0 .1, conn.0 .2),
             Err(e) => (Err(e), None, ""),
         };
 
         let mut direct = !conn.is_err();
-        if interface.is_force_relay() || conn.is_err() {
+        let relay_already_won = relay_won.is_some();
+        if let Some(stream) = relay_won {
+            conn = Ok(stream);
+            typ = "Relay";
+            direct = false;
+        }
+        if !relay_already_won && (interface.is_force_relay() || conn.is_err()) {
             if !relay_server.is_empty() {
-                let switch_code = interface.get_switch_code();
-                conn = Self::request_relay(
-                    peer_id,
-                    relay_server.to_owned(),
-                    rendezvous_server,
-                    !signed_id_pk.is_empty(),
-                    key,
-                    token,
-                    conn_type,
-                    &switch_code,
-                )
-                .await;
+                conn = match relay_task.take() {
+                    // 定制：竞速时已经发起的中继直接接着等，不重复申请。
+                    Some(task) => match task.await {
+                        Ok(res) => res,
+                        Err(err) => Err(anyhow!("relay task failed: {err}")),
+                    },
+                    None => {
+                        let switch_code = interface.get_switch_code();
+                        Self::request_relay(
+                            peer_id,
+                            relay_server.to_owned(),
+                            rendezvous_server,
+                            !signed_id_pk.is_empty(),
+                            key,
+                            token,
+                            conn_type,
+                            &switch_code,
+                        )
+                        .await
+                    }
+                };
                 if let Err(e) = conn {
                     // this direct is mainly used by on_establish_connection_error, so we update it here before bail
                     interface.update_direct(Some(false));

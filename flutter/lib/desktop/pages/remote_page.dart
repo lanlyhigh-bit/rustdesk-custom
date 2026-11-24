@@ -124,16 +124,6 @@ class _RemotePageState extends State<RemotePage>
   // 定制：连接建立后的首帧兜底定时器。长空白（对端显示器休眠/采集冷启动）后
   // 第一次连接时首帧可能要数秒才出，对端控制侧容易放弃，故到点主动请求一次刷新。
   Timer? _firstFrameFallbackTimer;
-  // 定制：窗口最小化标志。Windows 原生在「最大化状态被最小化后恢复」时发的是
-  // `maximize` 而不是 `restore` 事件（见 desktop_multi_window 插件 flutter_window.cc
-  // 的 WM_SIZE 分支），用该标志确保两路回调都能正确触发恢复刷新，同时避免用户
-  // 单纯最大化窗口（未经历最小化）时也触发对端重建采集。
-  bool _restoredFromMinimize = false;
-  // 定制：最小化恢复后的画面恢复闭环。代次在每次恢复时自增、再次最小化时也自增，
-  // 用来作废旧一轮的补刷循环。
-  int _videoRecoverGeneration = 0;
-  static const _kVideoRecoverMaxAttempts = 5;
-  static const _kVideoRecoverCheckDelay = Duration(milliseconds: 2500);
 
   // We need `_instanceIdOnEnterOrLeaveImage4Toolbar` together with `_onEnterOrLeaveImage4Toolbar`
   // to identify the toolbar instance and its callback function.
@@ -580,10 +570,6 @@ class _RemotePageState extends State<RemotePage>
     WakelockManager.enable(_uniqueKey);
     // Update pointer lock center when window is restored
     _updatePointerLockCenterIfNeeded();
-    // 定制：从最小化恢复时主动请求关键帧。
-    // 普通（非最大化）窗口恢复时插件发 `restore` 事件，走这里；
-    // 最大化窗口恢复时 Windows 原生发 `maximize` 事件，走 onWindowMaximize。
-    _refreshVideoIfRestoreFromMinimize();
   }
 
   // When the window is unminimized, onWindowMaximize or onWindowRestore can be called when the old state was maximized or not.
@@ -593,63 +579,6 @@ class _RemotePageState extends State<RemotePage>
     WakelockManager.enable(_uniqueKey);
     // Update pointer lock center when window is maximized
     _updatePointerLockCenterIfNeeded();
-    // 定制：从最小化恢复为最大化时 Windows 原生发 `maximize` 而非 `restore`，
-    // 同样要触发恢复刷新，否则 2.0.3 的修复在这条路径上完全失效。
-    _refreshVideoIfRestoreFromMinimize();
-  }
-
-  /// 定制：从最小化恢复后恢复画面（「刷新 → 验帧 → 按需补刷」的闭环）。
-  /// 固定刷两次不够：被控端 `refresh_video_display` 有 2s 节流，且重建采集需要时间，
-  /// 下一次刷新可能在首帧出来之前就把刚建好的采集再杀一次（被控端注释里的
-  /// 「刚建好就被杀，首帧永远出不来」），控制端于是永久冻在最后一帧——输入其实还通，
-  /// 用户看到的是「假死、点击没反应」，重连才能恢复。
-  /// 这里拿客户端每秒回传的真实帧率当判据：刷完等 2.5s，仍无帧才补刷，最多 5 次；
-  /// 一旦有帧立刻停，避免在正常会话上反复重建采集。
-  /// 仅对「最小化→恢复」路径生效（_restoredFromMinimize 标志），用户单纯最大化
-  /// 窗口不会触发对端重建采集。
-  void _refreshVideoIfRestoreFromMinimize() {
-    if (!_restoredFromMinimize) {
-      return;
-    }
-    _restoredFromMinimize = false;
-    if (!_ffi.ffiModel.pi.isSet.isTrue) {
-      return;
-    }
-    _videoRecoverStep(++_videoRecoverGeneration, 0);
-  }
-
-  void _videoRecoverStep(int generation, int attempt) {
-    if (!mounted || generation != _videoRecoverGeneration) {
-      return;
-    }
-    if (!_ffi.ffiModel.pi.isSet.isTrue) {
-      return;
-    }
-    if (attempt > 0 && _hasVideoFrameRecently()) {
-      return;
-    }
-    if (attempt >= _kVideoRecoverMaxAttempts) {
-      return;
-    }
-    sessionRefreshVideo(sessionId, _ffi.ffiModel.pi);
-    Future.delayed(_kVideoRecoverCheckDelay,
-        () => _videoRecoverStep(generation, attempt + 1));
-  }
-
-  /// 定制：当前会话最近一秒有没有出帧。数据来自客户端 status_timer 每秒回传的
-  /// quality status（多显示器时是空格分隔的列表，任一显示器有帧即算有帧）。
-  bool _hasVideoFrameRecently() {
-    final fps = _ffi.qualityMonitorModel.data.fps;
-    if (fps == null) {
-      return false;
-    }
-    for (final v in fps.split(' ')) {
-      final n = int.tryParse(v);
-      if (n != null && n > 0) {
-        return true;
-      }
-    }
-    return false;
   }
 
   @override
@@ -687,10 +616,6 @@ class _RemotePageState extends State<RemotePage>
   @override
   void onWindowMinimize() {
     super.onWindowMinimize();
-    // 定制：标记经历过最小化，恢复时（restore 或 maximize 事件）触发恢复刷新。
-    _restoredFromMinimize = true;
-    // 定制：作废进行中的补刷循环，最小化期间不再反复请求对端重建采集。
-    _videoRecoverGeneration++;
     WakelockManager.disable(_uniqueKey);
     if (isMacOS) {
       _macOSFullScreenFocusRecovery.cancel();

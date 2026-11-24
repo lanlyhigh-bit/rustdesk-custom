@@ -266,6 +266,14 @@ class CustomTouchGestureRecognizer extends ScaleGestureRecognizer {
         onTwoFingerScrollStart!(DragStartDetails(
             localPosition: d.localFocalPoint, globalPosition: d.focalPoint));
       }
+      // 定制（2026-11-24）：判定期间攒下的位移（≥ kTwoFingerScrollThreshold）一次补发，
+      // 否则每次双指滚动开头那 15px 都被吃掉，起步发滞、不跟手。
+      if (onTwoFingerScrollUpdate != null) {
+        onTwoFingerScrollUpdate!(DragUpdateDetails(
+            globalPosition: d.focalPoint,
+            localPosition: d.localFocalPoint,
+            delta: Offset(0, _twoFingerCumDy)));
+      }
       debugPrint("twoFingerPending -> twoFingerScroll");
       return;
     }

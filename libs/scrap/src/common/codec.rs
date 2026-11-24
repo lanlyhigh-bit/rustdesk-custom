@@ -269,6 +269,10 @@ impl Encoder {
         let preference = most_frequent.enum_value_or(PreferCodec::Auto);
 
         // auto: h265 > h264 > av1/vp9/vp8
+        // 定制（2026-11-24）：Windows 被控端自动模式改为 h264 > h265。实测 Windows 的
+        // H265 编码器冷启动慢一倍（首帧 1.86–2.26s，H264 为 0.93–1.10s，同机同链路 16 次
+        // 会话）。用户在连接设置里手动选了 H265 时仍按用户的来（见下面 PreferCodec::H265）。
+        let prefer_h264_auto = cfg!(windows) && h264_useable;
         let av1_test = Config::get_option(hbb_common::config::keys::OPTION_AV1_TEST) != "N";
         let mut auto_codec = if av1_useable && av1_test {
             CodecFormat::AV1
@@ -278,7 +282,7 @@ impl Encoder {
         if h264_useable {
             auto_codec = CodecFormat::H264;
         }
-        if h265_useable {
+        if h265_useable && !prefer_h264_auto {
             auto_codec = CodecFormat::H265;
         }
         if auto_codec == CodecFormat::VP9 || auto_codec == CodecFormat::AV1 {
