@@ -2461,18 +2461,21 @@ pub async fn test_nat_ipv4() -> ResultType<(SocketAddr, String)> {
 // 定制（2026-10-28）：v6 源地址探测目标。上游只认 stun.l.google.com，该域名
 // 在国内解析不出 AAAA 时整条 v6 路径直接失效（socket_addr_v6 恒为空 → 只能中继）。
 // 自建信令服务器必然可达，用它选源地址最可靠。
-fn ipv6_probe_targets() -> Vec<SocketAddr> {
+// 用 tokio 异步解析：同步 to_socket_addrs 会卡住 runtime 工作线程，节流降到 5s 后
+// 调用更频繁，遇到 DNS 慢（如 53 被劫持）时影响面更大。
+async fn ipv6_probe_targets() -> Vec<SocketAddr> {
     let mut out = Vec::new();
     for host in Config::get_rendezvous_servers() {
         let host = check_port(&host, RENDEZVOUS_PORT);
-        if let Ok(addrs) = host.to_socket_addrs() {
+        if let Ok(Ok(addrs)) = timeout(2_000, tokio::net::lookup_host(host)).await {
             out.extend(addrs.filter(|x| x.is_ipv6()));
         }
     }
     out
 }
 
-fn is_global_ipv6(addr: &SocketAddr) -> bool {
+/// 全局单播 IPv6（2000::/3），排除 ULA / 链路本地等内网地址。
+pub(crate) fn is_global_ipv6(addr: &SocketAddr) -> bool {
     if let std::net::IpAddr::V6(ip) = addr.ip() {
         !ip.is_loopback()
             && !ip.is_unspecified()
@@ -2488,7 +2491,7 @@ async fn test_bind_ipv6() -> ResultType<SocketAddr> {
     let socket = UdpSocket::bind(local_addr).await?;
     // 定制（2026-10-28）：先用自建服务器选源地址。UDP connect 只让内核选定源
     // 地址、不发包，因此不要求目标真的回包。
-    for target in ipv6_probe_targets() {
+    for target in ipv6_probe_targets().await {
         if socket.connect(target).await.is_err() {
             continue;
         }

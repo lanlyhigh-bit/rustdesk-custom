@@ -39,12 +39,23 @@ use crate::{
 #[cfg(feature = "unix-file-copy-paste")]
 use crate::{clipboard::check_clipboard_files, clipboard_file::unix_file_clip};
 
-/// [custom] 跳过"登录(token) + 自定义 key"场景下的强制 `secure_tcp` 握手。
+/// [custom] 判断当前 key 能否用来校验 hbbs 签名（即它本身就是 hbbs 的 ed25519 公钥）。
 ///
-/// 原因：自建服务器使用非 base64 的自定义 key 时，`get_rs_pk(key)` 会把它当成公钥解析并失败，
-/// 连接报 `invalid public key from rendezvous server` 而无法建立。
-/// 当前取值保持既有行为不变；改为 `false` 即可一行回滚到官方逻辑。
-const CUSTOM_SKIP_SECURE_TCP_ON_LOGIN: bool = true;
+/// hbbs 用 `-k <普通字符串>` 启动时没有签名私钥，客户端 key 也不是公钥：
+/// `secure_tcp` 必然报 `invalid public key from rendezvous server`，端到端也必然
+/// 无法验证（于是每次连接都弹「不安全连接」）。这种配置下两处都只能跳过。
+///
+/// hbbs 改为 `-k _`、客户端 key 填 `id_ed25519.pub` 后，这里返回 true，
+/// `secure_tcp` 与端到端校验全部按官方逻辑执行，加密可验证，弹窗自然不会出现。
+/// 与 `secure_connection` 的取值规则保持一致（空 key 时用内置 `RS_PUB_KEY`）。
+pub(crate) fn custom_key_is_server_pk(key: &str) -> bool {
+    get_rs_pk(if key.is_empty() {
+        config::RS_PUB_KEY
+    } else {
+        key
+    })
+    .is_some()
+}
 pub use file_trait::FileManager;
 #[cfg(not(feature = "flutter"))]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -426,9 +437,13 @@ impl Client {
         };
 
         let switch_code = interface.get_switch_code();
-        // [custom] 详见 CUSTOM_SKIP_SECURE_TCP_ON_LOGIN 的说明。
-        // 官方原条件: !key.is_empty() && (!token.is_empty() || !switch_code.is_empty())
-        if !CUSTOM_SKIP_SECURE_TCP_ON_LOGIN
+        // [custom] 官方原条件 + key 必须是 hbbs 公钥，详见 custom_key_is_server_pk。
+        // key 不是公钥时与改造前一样落到下面的 UDP 端口探测分支。
+        let key_is_server_pk = custom_key_is_server_pk(&key);
+        if !key_is_server_pk {
+            log::warn!("key is not the rendezvous server public key, skip secure_tcp; set hbbs -k _ and use id_ed25519.pub as key");
+        }
+        if key_is_server_pk
             && !key.is_empty()
             && (!token.is_empty() || !switch_code.is_empty())
         {
@@ -889,9 +904,8 @@ impl Client {
                 .await
                 .with_context(|| "Failed to connect to rendezvous server")?;
 
-            // [custom] 同上，详见 CUSTOM_SKIP_SECURE_TCP_ON_LOGIN。
-            // 官方原条件: !key.is_empty() && (!token.is_empty() || !switch_code.is_empty())
-            if !CUSTOM_SKIP_SECURE_TCP_ON_LOGIN
+            // [custom] 同上，详见 custom_key_is_server_pk。
+            if custom_key_is_server_pk(key)
                 && !key.is_empty()
                 && (!token.is_empty() || !switch_code.is_empty())
             {

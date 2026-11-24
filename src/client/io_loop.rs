@@ -16,10 +16,6 @@ use crate::{
 const RESTART_REMOTE_DEVICE_NO_DATA_TIMEOUT: Duration = Duration::from_secs(5);
 const KCP_CLOSE_REASON_FLUSH_DELAY: Duration = Duration::from_millis(30);
 
-/// [custom] 关闭"无法验证端到端加密"时的确认弹窗：即使 `is_secured == false` 也直接建立连接。
-///
-/// 当前取值保持既有行为不变；改为 `false` 即可一行回滚到官方的确认流程。
-const CUSTOM_SKIP_INSECURE_CONNECTION_CONFIRM: bool = true;
 #[cfg(feature = "unix-file-copy-paste")]
 use crate::{clipboard::try_empty_clipboard_files, clipboard_file::unix_file_clip};
 #[cfg(any(
@@ -192,9 +188,14 @@ impl<T: InvokeUiSession> Remote<T> {
                 let is_secured = peer.is_secured();
                 self.handler
                     .set_connection_type(is_secured, direct, stream_type); // flutter -> connection_ready
-                // [custom] 详见 CUSTOM_SKIP_INSECURE_CONNECTION_CONFIRM：
-                // 端到端加密无法验证时不再弹确认框，直接建立连接。
-                if !CUSTOM_SKIP_INSECURE_CONNECTION_CONFIRM
+                // [custom] key 不是 hbbs 公钥时根本不可能验证端到端加密，弹窗每次必出、
+                // 毫无信息量，直接跳过；key 正确时恢复官方确认——此时加密可验证，
+                // 正常连接不会弹，只有签名真的对不上（疑似中间人）才会提示。
+                let e2ee_verifiable = client::custom_key_is_server_pk(key);
+                if !is_secured && !e2ee_verifiable {
+                    log::warn!("end-to-end encryption not verifiable: key is not the rendezvous server public key");
+                }
+                if e2ee_verifiable
                     && !is_secured
                     && !crate::common::is_direct_ip_access(&self.handler.get_id())
                     && !client::confirm_insecure_connection(&self.handler, &mut self.receiver).await

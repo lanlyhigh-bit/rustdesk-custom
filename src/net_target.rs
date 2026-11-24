@@ -55,12 +55,14 @@ pub async fn pick_reachable(target: &str) -> String {
     // "可达"，注册到 hbbs 时源地址却会被 SNAT 成路由器（实测 192.168.5.3），
     // 对端拿这个地址打洞必然失败。上游 test_target 走系统选择（RFC 6724 优先
     // IPv6），所以老版本不受影响；这里把同样的偏好显式加回来。
+    // 只偏好全局单播 v6（2000::/3）：ULA（fd00::/8）等内网 v6 和内网 A 一样会被隧道
+    // SNAT，不应排在前面。
     let mut best: Option<(bool, usize, SocketAddr)> = None;
     for (idx, addr, ok) in join_all(probes).await {
         if !ok {
             continue;
         }
-        let key = (!addr.is_ipv6(), idx);
+        let key = (!crate::common::is_global_ipv6(&addr), idx);
         if best.map(|(b, i, _)| key < (b, i)).unwrap_or(true) {
             best = Some((key.0, key.1, addr));
         }

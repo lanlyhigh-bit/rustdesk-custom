@@ -464,7 +464,14 @@ impl RendezvousMediator {
         let target = crate::net_target::pick_reachable(&host).await;
         let mut conn = connect_tcp(target, CONNECT_TIMEOUT).await?;
         let key = crate::get_key(true).await;
-        crate::secure_tcp(&mut conn, &key).await?;
+        // 定制：key 不是 hbbs 公钥时 secure_tcp 必然报 invalid public key，TCP 注册
+        // （含 UDP 失败后的 TCP 兜底）一条都起不来。这种配置下 hbbs 本就没有签名私钥，
+        // 不会发 KeyExchange，跳过即可；key 正确时按官方逻辑加密。
+        if crate::client::custom_key_is_server_pk(&key) {
+            crate::secure_tcp(&mut conn, &key).await?;
+        } else {
+            log::warn!("key is not the rendezvous server public key, register over plain tcp");
+        }
         let mut rz = Self {
             addr: conn.local_addr().into_target_addr()?,
             host: host.clone(),
@@ -505,6 +512,14 @@ impl RendezvousMediator {
                     if last_recv_msg.elapsed().as_millis() as u64 > rz.keep_alive as u64 * 3 / 2 {
                         bail!("Rendezvous connection is timeout");
                     }
+                    // 定制：这条 TCP 只是 UDP 注册失败后的临时兜底时，退避到点就主动退出，
+                    // 让 start() 重新试 UDP。否则 TCP 一直不断就永远回不去 UDP，打洞地址
+                    // 停留在 TCP 端口上 ⇒ 永久中继（正是退避策略想避免的情况）。
+                    let retry_at = UDP_RETRY_AT.load(Ordering::SeqCst);
+                    if retry_at > 0 && retry_at != i64::MAX && get_time() >= retry_at && !Self::tcp_forced() {
+                        log::info!("udp retry due, leave tcp fallback");
+                        bail!("udp retry due, leave tcp fallback");
+                    }
                     if (!Config::get_key_confirmed() ||
                         !Config::get_host_key_confirmed(&rz.host_prefix)) &&
                         last_register_sent.map(|x| x.elapsed().as_millis() as i64).unwrap_or(REG_INTERVAL) >= REG_INTERVAL {
@@ -517,16 +532,21 @@ impl RendezvousMediator {
         Ok(())
     }
 
+    /// 不论 UDP 是否可用都必须走 TCP 的配置（上游原有的四个条件）。
+    fn tcp_forced() -> bool {
+        (cfg!(debug_assertions) && option_env!("TEST_TCP").is_some())
+            || Config::is_proxy()
+            || use_ws()
+            || crate::is_udp_disabled()
+    }
+
     pub async fn start(server: ServerPtr, host: String) -> ResultType<()> {
         log::info!("start rendezvous mediator of {}", host);
         //If the investment agent type is http or https, then tcp forwarding is enabled.
         let retry_at = UDP_RETRY_AT.load(Ordering::SeqCst);
         // 0 = 从未降级过；i64::MAX = 已判定 UDP 不可用（永久 TCP）；其余 = 退避截止时刻
         let udp_retry_due = retry_at > 0 && get_time() >= retry_at;
-        if (cfg!(debug_assertions) && option_env!("TEST_TCP").is_some())
-            || Config::is_proxy()
-            || use_ws()
-            || crate::is_udp_disabled()
+        if Self::tcp_forced()
             // 定制：UDP 注册连续失败后的退避期内走 TCP 注册，保证被控端始终可被
             // 连接；退避到点后再试一次 UDP（见 UDP_RETRY_AT）。
             || (retry_at > 0 && !udp_retry_due)
