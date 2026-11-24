@@ -118,12 +118,45 @@ pub(crate) fn reset_needs_deploy_notification() {
     NOTIFIED_NEEDS_DEPLOY.store(false, Ordering::SeqCst);
 }
 
+// 定制（2026-11-24）：hbbs 发现注册来源 IP 变了（换网、断开 WireGuard）时不续期在线
+// 时间，只回 request_pk，等收到一次 RegisterPk 才恢复在线。上游只发一次，丢了就要
+// 再等 15s 一轮。这里收到 request_pk 后每 3s 补发，直到 RegisterPk OK。
+// hbbs 对 RegisterPk 限频：两次间隔不超过 6s 时最多接受 3 次，否则回 TOO_FREQUENT。
+// 首发 + 2 次补发 = 3 次，正好在限额内。
+const PK_RETRY_MAX: u8 = 2;
+const PK_RETRY_INTERVAL: Duration = Duration::from_secs(3);
+
+// 定制（2026-11-24）：每 3s 查一次系统去 hbbs 走的本机源地址（只查路由表，不发包）。
+// 断开 WireGuard 后旧路线失效，但 UDP 发包不会报错，上游要等 4 次注册超时 + 60s 节流
+// 才会重建 socket，期间 hbbs 判离线。源地址一变就立刻重选地址、重建 socket、重新注册。
+const ROUTE_CHECK_INTERVAL: Duration = Duration::from_secs(3);
+
+/// 系统发往 `addr` 时会用的本机源地址；不可路由或非 IP 目标（如走 socks 代理）返回 None。
+/// UDP connect 只做路由选择、不发包，开销是两次系统调用。
+fn route_source(addr: &TargetAddr<'static>) -> Option<std::net::IpAddr> {
+    let TargetAddr::Ip(peer) = addr else {
+        return None;
+    };
+    let local: SocketAddr = if peer.is_ipv4() {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+    let s = std::net::UdpSocket::bind(local).ok()?;
+    s.connect(peer).ok()?;
+    s.local_addr().ok().map(|a| a.ip())
+}
+
 #[derive(Clone)]
 pub struct RendezvousMediator {
     addr: TargetAddr<'static>,
     host: String,
     host_prefix: String,
     keep_alive: i32,
+    /// 定制：request_pk 之后还要补发 RegisterPk 的次数（见 PK_RETRY_MAX）。
+    pk_retry: u8,
+    /// 定制：上次发出 RegisterPk 的时间，用于补发间隔。
+    last_pk_sent: Option<Instant>,
 }
 
 impl RendezvousMediator {
@@ -238,6 +271,8 @@ impl RendezvousMediator {
             host: host.clone(),
             host_prefix: Self::get_host_prefix(&host),
             keep_alive: crate::DEFAULT_KEEP_ALIVE,
+            pk_retry: 0,
+            last_pk_sent: None,
         };
 
         let mut timer = crate::rustdesk_interval(interval(crate::TIMER_OUT));
@@ -253,6 +288,8 @@ impl RendezvousMediator {
         let mut last_dns_check = Instant::now();
         let mut old_latency = 0;
         let mut ema_latency = 0;
+        let mut route_src = route_source(&addr);
+        let mut last_route_check = Instant::now();
         loop {
             let mut update_latency = || {
                 last_register_resp = Some(Instant::now());
@@ -314,6 +351,41 @@ impl RendezvousMediator {
                     if deploy_register_throttled().await {
                         continue;
                     }
+                    // 定制 A：出口源地址变了（典型：断开/连上 WireGuard）⇒ 立刻重选地址、
+                    // 重建 socket，并清掉注册计时，让下面这一轮马上重新注册。
+                    if last_route_check.elapsed() >= ROUTE_CHECK_INTERVAL {
+                        last_route_check = Instant::now();
+                        let src = route_source(&addr);
+                        if src != route_src {
+                            log::info!("route to {} changed: {:?} -> {:?}, rebind", rz.host, route_src, src);
+                            let rebind_target = crate::net_target::pick_reachable(&rz.host).await;
+                            match socket_client::rebind_udp_for(&rebind_target).await {
+                                Ok(Some((s, new_addr))) => {
+                                    socket = s;
+                                    rz.addr = new_addr.clone();
+                                    addr = new_addr;
+                                }
+                                Ok(None) => {}
+                                Err(err) => log::warn!("rebind after route change failed: {err}"),
+                            }
+                            route_src = route_source(&addr);
+                            last_register_resp = None;
+                            last_register_sent = None;
+                            fails = 0;
+                            reg_timeout = MIN_REG_TIMEOUT;
+                        }
+                    }
+                    // 定制 B：request_pk 后补发 RegisterPk，直到 OK（见 PK_RETRY_MAX）。
+                    if rz.pk_retry > 0
+                        && rz
+                            .last_pk_sent
+                            .map(|t| t.elapsed() >= PK_RETRY_INTERVAL)
+                            .unwrap_or(true)
+                    {
+                        rz.pk_retry -= 1;
+                        log::info!("resend RegisterPk, {} retries left", rz.pk_retry);
+                        rz.register_pk(Sink::Framed(&mut socket, &addr)).await?;
+                    }
                     let now = Some(Instant::now());
                     let expired = last_register_resp.map(|x| x.elapsed().as_millis() as i64 >= REG_INTERVAL).unwrap_or(true);
                     let timeout = last_register_sent.map(|x| x.elapsed().as_millis() as i64 >= reg_timeout).unwrap_or(false);
@@ -345,6 +417,7 @@ impl RendezvousMediator {
                                         rz.addr = new_addr.clone();
                                         addr = new_addr;
                                     }
+                                    route_src = route_source(&addr);
                                     last_dns_check = Instant::now();
                                 }
                             } else if fails >= MAX_FAILS1 {
@@ -381,6 +454,8 @@ impl RendezvousMediator {
                 update_latency();
                 if rpr.request_pk {
                     log::info!("request_pk received from {}", self.host);
+                    // 定制 B：首发之后再补发至多 PK_RETRY_MAX 次，直到 RegisterPk OK。
+                    self.pk_retry = PK_RETRY_MAX;
                     self.register_pk(sink).await?;
                 }
             }
@@ -388,6 +463,7 @@ impl RendezvousMediator {
                 update_latency();
                 match rpr.result.enum_value() {
                     Ok(register_pk_response::Result::OK) => {
+                        self.pk_retry = 0;
                         Config::set_key_confirmed(true);
                         Config::set_host_key_confirmed(&self.host_prefix, true);
                         *SOLVING_PK_MISMATCH.lock().await = "".to_owned();
@@ -396,9 +472,11 @@ impl RendezvousMediator {
                         reset_needs_deploy_notification();
                     }
                     Ok(register_pk_response::Result::UUID_MISMATCH) => {
+                        self.pk_retry = 0;
                         self.handle_uuid_mismatch(sink).await?;
                     }
                     Ok(register_pk_response::Result::NOT_DEPLOYED) => {
+                        self.pk_retry = 0;
                         if !NEEDS_DEPLOY.load(Ordering::SeqCst) {
                             log::warn!("Server requires deployment. Run `rustdesk --deploy --token <api_token>` on this device.");
                         }
@@ -477,6 +555,8 @@ impl RendezvousMediator {
             host: host.clone(),
             host_prefix: Self::get_host_prefix(&host),
             keep_alive: crate::DEFAULT_KEEP_ALIVE,
+            pk_retry: 0,
+            last_pk_sent: None,
         };
         let mut timer = crate::rustdesk_interval(interval(crate::TIMER_OUT));
         let mut last_register_sent: Option<Instant> = None;
@@ -858,6 +938,7 @@ impl RendezvousMediator {
             ..Default::default()
         });
         socket.send(&msg_out).await?;
+        self.last_pk_sent = Some(Instant::now());
         SENT_REGISTER_PK.store(true, Ordering::SeqCst);
         Ok(())
     }
