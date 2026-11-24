@@ -208,6 +208,9 @@ extern "C" {
     pub fn CGDisplayCreateImage(display: u32) -> CGImageRef;
     pub fn CGImageGetDataProvider(image: CGImageRef) -> CGDataProviderRef;
     pub fn CGImageGetBytesPerRow(image: CGImageRef) -> usize;
+    pub fn CGImageGetWidth(image: CGImageRef) -> usize;
+    pub fn CGImageGetHeight(image: CGImageRef) -> usize;
+    pub fn CGImageGetBitsPerPixel(image: CGImageRef) -> usize;
     pub fn CGDataProviderCopyData(provider: CGDataProviderRef) -> CFDataRef;
     pub fn CFDataGetBytePtr(data: CFDataRef) -> *const u8;
     pub fn CFDataGetLength(data: CFDataRef) -> isize;

@@ -42,20 +42,36 @@ impl Capturer {
         // 链式权限申请（2026-10-16 实测：差分装机后 ScreenCapture 授权被清、
         // 弹窗被提前消耗，用户看到"只有第一个权限申请"）；且无授权时采集器
         // 本来就拿不到内容，bootstrap 无意义。
+        // 定制：截图尺寸/格式必须与采集器完全一致才使用。Retina、缩放分辨率、刚换显示器
+        // 时两者可能不同，而下游按采集器的宽高读取缓冲，尺寸不符会越界或画面错乱。
+        let (want_w, want_h) = (inner.width(), inner.height());
         unsafe {
             if quartz::ffi::CGPreflightScreenCaptureAccess() {
                 let image = quartz::ffi::CGDisplayCreateImage(display_id);
                 if !image.is_null() {
+                    let img_w = quartz::ffi::CGImageGetWidth(image);
+                    let img_h = quartz::ffi::CGImageGetHeight(image);
+                    let bpp = quartz::ffi::CGImageGetBitsPerPixel(image);
+                    let stride = quartz::ffi::CGImageGetBytesPerRow(image);
+                    let shape_ok = img_w == want_w
+                        && img_h == want_h
+                        && bpp == 32
+                        && stride >= want_w * 4;
                     let provider = quartz::ffi::CGImageGetDataProvider(image);
-                    if !provider.is_null() {
+                    if !shape_ok {
+                        hbb_common::log::debug!(
+                            "skip bootstrap frame: image {img_w}x{img_h}@{bpp}bpp, capturer {want_w}x{want_h}"
+                        );
+                    } else if !provider.is_null() {
                         let data = quartz::ffi::CGDataProviderCopyData(provider);
                         if !data.is_null() {
                             let ptr = quartz::ffi::CFDataGetBytePtr(data);
                             let len = quartz::ffi::CFDataGetLength(data) as usize;
-                            let stride = quartz::ffi::CGImageGetBytesPerRow(image);
-                            let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
-                            if let Ok(mut g) = frame.lock() {
-                                *g = Some(quartz::Frame::from_raw_bgra(bytes, stride));
+                            if !ptr.is_null() && len >= stride * want_h {
+                                let bytes = std::slice::from_raw_parts(ptr, len).to_vec();
+                                if let Ok(mut g) = frame.lock() {
+                                    *g = Some(quartz::Frame::from_raw_bgra(bytes, stride));
+                                }
                             }
                             quartz::ffi::CFRelease(data);
                         }

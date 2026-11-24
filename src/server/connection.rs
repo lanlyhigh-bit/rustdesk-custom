@@ -166,14 +166,36 @@ fn public_desktop_dir() -> Option<std::path::PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
-fn resolve_custom_drop_path(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix(CUSTOM_DROP_DESKTOP_PREFIX) {
-        return custom_desktop_dir()
-            .join(rest.trim_start_matches(['/', '\\']))
-            .to_string_lossy()
-            .into_owned();
+/// Custom: a dropped name must stay inside the desktop: no `..`, no absolute path, no drive
+/// letter. Checked on the target name and on every entry of a dropped directory, because the
+/// write job joins each entry name onto the target path.
+fn custom_drop_name_is_safe(name: &str) -> bool {
+    // ':' only matters on Windows (drive letter / ADS); on macOS it is a legal name character.
+    if name.starts_with(['/', '\\']) || name.contains('\0') || (cfg!(windows) && name.contains(':'))
+    {
+        return false;
     }
-    path.to_owned()
+    !name.split(['/', '\\']).any(|part| part == "..")
+}
+
+fn custom_drop_is_safe(rest: &str, files: &[FileEntry]) -> bool {
+    let rest = rest.trim_start_matches(['/', '\\']);
+    !rest.is_empty()
+        && custom_drop_name_is_safe(rest)
+        && files.iter().all(|f| custom_drop_name_is_safe(&f.name))
+}
+
+/// Resolves `$DESKTOP$/name` to the real desktop path.
+/// `None` = not a drop path (stock behaviour); `Some(Err)` = a drop path that tries to escape.
+fn resolve_custom_drop_path(path: &str, files: &[FileEntry]) -> Option<Result<String, ()>> {
+    let rest = path.strip_prefix(CUSTOM_DROP_DESKTOP_PREFIX)?;
+    if !custom_drop_is_safe(rest, files) {
+        return Some(Err(()));
+    }
+    Some(Ok(custom_desktop_dir()
+        .join(rest.trim_start_matches(['/', '\\']))
+        .to_string_lossy()
+        .into_owned()))
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -2258,6 +2280,19 @@ impl Connection {
         self.file && self.enable_file_transfer
     }
 
+    /// Custom: an in-session drop writes files, so it needs the same permission as file
+    /// transfer (the "file" permission and the peer's file-transfer option).
+    fn custom_drop_allowed(&self) -> bool {
+        #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+        {
+            self.file && self.enable_file_transfer
+        }
+        #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+        {
+            false
+        }
+    }
+
     #[cfg(feature = "unix-file-copy-paste")]
     fn can_sub_file_clipboard_service(&self) -> bool {
         self.clipboard_enabled()
@@ -3365,9 +3400,13 @@ impl Connection {
                             }
                         }
                     }
-                    if !handle_fa && CUSTOM_ALLOW_DROP_IN_REMOTE_SESSION {
-                        if let Some(file_action::Union::Receive(_)) = fa.union.as_ref() {
-                            handle_fa = true;
+                    // Custom: only a `$DESKTOP$` drop is let through outside a file-transfer
+                    // connection, and only when file transfer is permitted for this session.
+                    if !handle_fa && CUSTOM_ALLOW_DROP_IN_REMOTE_SESSION && self.custom_drop_allowed() {
+                        if let Some(file_action::Union::Receive(r)) = fa.union.as_ref() {
+                            if r.path.starts_with(CUSTOM_DROP_DESKTOP_PREFIX) {
+                                handle_fa = true;
+                            }
                         }
                     }
                     if handle_fa {
@@ -3514,8 +3553,17 @@ impl Connection {
                                 // client to server
                                 // note: 1.1.10 introduced identical file detection, which breaks original logic of send/recv files
                                 // whenever got send/recv request, check peer version to ensure old version of rustdesk
-                                let drop_target = resolve_custom_drop_path(&r.path);
-                                let is_custom_drop = drop_target != r.path;
+                                let (drop_target, is_custom_drop) =
+                                    match resolve_custom_drop_path(&r.path, &r.files) {
+                                        None => (r.path.clone(), false),
+                                        Some(Ok(p)) => (p, true),
+                                        Some(Err(())) => {
+                                            log::warn!("reject drop with unsafe path: {}", r.path);
+                                            self.send(fs::new_error(r.id, "invalid drop path", r.file_num))
+                                                .await;
+                                            return true;
+                                        }
+                                    };
                                 let drop_id = r.id;
                                 let drop_file_num = r.file_num;
                                 // Custom: a drag-and-drop upload has no file-manager job behind it on the
@@ -4377,18 +4425,9 @@ impl Connection {
             *last = Some(now);
         }
         // 定制：macOS 被控端在刷新时可能刚被唤醒/显示器休眠，capturer 出不了首帧。
-        // caffeinate -u 5s 先把显示器点亮，再让视频服务重建，否则控制端仍黑屏。
+        // 先把显示器点亮 5 秒，再让视频服务重建，否则控制端仍黑屏。
         #[cfg(target_os = "macos")]
-        {
-            use std::process::Command;
-            if let Ok(task) = Command::new("/usr/bin/caffeinate")
-                .arg("-u")
-                .arg("-t 5")
-                .spawn()
-            {
-                super::CHILD_PROCESS.lock().unwrap().push(task);
-            }
-        }
+        super::macos_wake_display(5);
         video_service::refresh();
         self.server.upgrade().map(|s| {
             s.read().unwrap().set_video_service_opt(
@@ -6423,36 +6462,16 @@ impl FileRemoveLogControl {
     }
 }
 
-/// 定制：被控端 macOS 收到远端输入时点亮显示器（5 秒节流）。
+/// 定制：被控端 macOS 收到远端输入时点亮显示器 5 秒（节流见 `macos_wake_display`）。
 ///
 /// 背景：被控端显示器按电源策略休眠后，CGDisplayStream 采集会停止送帧，
 /// 控制端表现为持续黑屏/卡死；而远端输入（鼠标/键盘/触控）正是"用户马上要看
 /// 画面"的最强信号。这里在被控端补一层兜底唤醒：`caffeinate -u` 会声明用户
 /// 活动、立即点亮显示器并重置系统空闲计时器；只要持续操作就不会再次休眠。
-/// 节流避免高频鼠标移动造成进程风暴；caffeinate 进程句柄交给 CHILD_PROCESS
-/// 统一回收（check_zombie 线程负责 reap）。
 #[cfg(target_os = "macos")]
+#[inline]
 fn wake_display_on_remote_input() {
-    use std::sync::Mutex;
-    use std::time::{Duration, Instant};
-    static LAST_WAKE: Mutex<Option<Instant>> = Mutex::new(None);
-    let now = Instant::now();
-    {
-        let mut last = LAST_WAKE.lock().unwrap();
-        if let Some(t) = *last {
-            if now.duration_since(t) < Duration::from_secs(5) {
-                return;
-            }
-        }
-        *last = Some(now);
-    }
-    if let Ok(task) = std::process::Command::new("/usr/bin/caffeinate")
-        .arg("-u")
-        .arg("-t 5")
-        .spawn()
-    {
-        super::CHILD_PROCESS.lock().unwrap().push(task);
-    }
+    super::macos_wake_display(5);
 }
 
 fn start_wakelock_thread() -> std::sync::mpsc::Sender<(usize, usize)> {

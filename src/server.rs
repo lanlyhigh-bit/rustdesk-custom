@@ -258,21 +258,44 @@ pub async fn create_tcp_connection(
 
     #[cfg(target_os = "macos")]
     {
-        use std::process::Command;
         // 定制：-t 5 太短。本机 displaysleep=10 分钟，长空闲后第一次连接时显示器
         // 正休眠，caffeinate -u 点亮后 capturer 需要数秒才恢复出帧（实测 18:50 那次
         // 5 秒窗口 55.73 过期，控制端 55.43 就放弃了）。放宽到 60 秒覆盖首帧窗口。
-        if let Ok(task) = Command::new("/usr/bin/caffeinate")
-            .arg("-u")
-            .arg("-t 60")
-            .spawn()
-        {
-            super::CHILD_PROCESS.lock().unwrap().push(task);
-        }
+        macos_wake_display(60);
         log::info!("wake up macos");
     }
     Connection::start(addr, stream, id, Arc::downgrade(&server), meta).await;
     Ok(())
+}
+
+/// 定制：点亮 macOS 显示器并在 `secs` 秒内保持（`caffeinate -u -t secs`）。
+///
+/// 新连接（60s）、刷新视频（5s）、收到远端输入（5s）三处共用。已有的 caffeinate 还能
+/// 覆盖本次请求的一半以上时长就跳过：高频鼠标移动最多每 2.5 秒起一个进程，60 秒的
+/// 连接唤醒期内输入不会再起新进程，而短唤醒期间来的新连接仍会续上 60 秒。
+/// 进程句柄交给 CHILD_PROCESS 统一回收。
+#[cfg(target_os = "macos")]
+pub(crate) fn macos_wake_display(secs: u64) {
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+    static WAKE_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+    let now = Instant::now();
+    let want = Duration::from_secs(secs);
+    {
+        let mut last = WAKE_UNTIL.lock().unwrap_or_else(|e| e.into_inner());
+        if matches!(*last, Some(t) if t >= now + want / 2) {
+            return;
+        }
+        *last = Some(now + want);
+    }
+    if let Ok(task) = std::process::Command::new("/usr/bin/caffeinate")
+        .arg("-u")
+        .arg("-t")
+        .arg(secs.to_string())
+        .spawn()
+    {
+        super::CHILD_PROCESS.lock().unwrap().push(task);
+    }
 }
 
 pub async fn accept_connection(
