@@ -36,6 +36,16 @@ fn get_custom_server_from_config_string(s: &str) -> ResultType<CustomServer> {
     }
 }
 
+fn strip_prefix_ignore_case<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
+    if s.len() >= prefix.len()
+        && s.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
+    {
+        Some(&s[prefix.len()..])
+    } else {
+        None
+    }
+}
+
 pub fn get_custom_server_from_string(s: &str) -> ResultType<CustomServer> {
     let s = if s.to_lowercase().ends_with(".exe.exe") {
         &s[0..s.len() - 8]
@@ -56,27 +66,28 @@ pub fn get_custom_server_from_string(s: &str) -> ResultType<CustomServer> {
      *
      * This allows using a ',' (comma) symbol as a final delimiter.
      */
+    // Search from the first h/H so non-ASCII bytes before it cannot skew the
+    // byte offset we slice the original (case-preserved) string with.
     if s.to_lowercase().contains("host=") {
-        let stripped = &s[s.to_lowercase().find("host=").unwrap_or(0)..s.len()];
+        let from = s.find(|c: char| c.eq_ignore_ascii_case(&'h')).unwrap_or(0);
+        let stripped = match s[from..].to_lowercase().find("host=") {
+            Some(rel) => &s[from + rel..],
+            None => &s[from..],
+        };
         let strs: Vec<&str> = stripped.split(",").collect();
         let mut host = String::default();
         let mut key = String::default();
         let mut api = String::default();
         let mut relay = String::default();
-        let strs_iter = strs.iter();
-        for el in strs_iter {
-            let el_lower = el.to_lowercase();
-            if el_lower.starts_with("host=") {
-                host = el.chars().skip(5).collect();
-            }
-            if el_lower.starts_with("key=") {
-                key = el.chars().skip(4).collect();
-            }
-            if el_lower.starts_with("api=") {
-                api = el.chars().skip(4).collect();
-            }
-            if el_lower.starts_with("relay=") {
-                relay = el.chars().skip(6).collect();
+        for el in strs.iter() {
+            if let Some(v) = strip_prefix_ignore_case(el, "host=") {
+                host = v.to_owned();
+            } else if let Some(v) = strip_prefix_ignore_case(el, "key=") {
+                key = v.to_owned();
+            } else if let Some(v) = strip_prefix_ignore_case(el, "api=") {
+                api = v.to_owned();
+            } else if let Some(v) = strip_prefix_ignore_case(el, "relay=") {
+                relay = v.to_owned();
             }
         }
         return Ok(CustomServer {
