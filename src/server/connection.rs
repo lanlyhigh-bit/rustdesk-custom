@@ -92,6 +92,11 @@ lazy_static::lazy_static! {
 #[cfg(feature = "flutter")]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 const SWITCH_SIDES_UUID_TTL: Duration = Duration::from_secs(10);
+/// Fallback when both the peer timestamp and the local clock report 0; a real clock is never 0.
+const ONE_NONZERO: NonZeroI64 = match NonZeroI64::new(1) {
+    Some(v) => v,
+    None => unreachable!(),
+};
 
 #[cfg(feature = "flutter")]
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -3917,7 +3922,7 @@ impl Connection {
                     if request.is_connect {
                         self.voice_call_request_timestamp = Some(
                             NonZeroI64::new(request.req_timestamp)
-                                .unwrap_or(NonZeroI64::new(get_time()).unwrap()),
+                                .unwrap_or(NonZeroI64::new(get_time()).unwrap_or(ONE_NONZERO)),
                         );
                         // Notify the connection manager.
                         self.send_to_cm(Data::VoiceCallIncoming);

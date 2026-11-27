@@ -424,11 +424,18 @@ pub fn core_main() -> Option<Vec<String>> {
                 let filepath;
                 let path = std::path::Path::new(&args[1]);
                 if !path.is_absolute() {
-                    let mut cur = std::env::current_dir().unwrap();
-                    cur.push(path);
-                    filepath = cur.to_str().unwrap().to_string();
+                    match std::env::current_dir() {
+                        Ok(mut cur) => {
+                            cur.push(path);
+                            filepath = cur.to_string_lossy().to_string();
+                        }
+                        Err(err) => {
+                            eprintln!("Failed to resolve current dir: {err}");
+                            return None;
+                        }
+                    }
                 } else {
-                    filepath = path.to_str().unwrap().to_string();
+                    filepath = path.to_string_lossy().to_string();
                 }
                 import_config(&filepath);
             }

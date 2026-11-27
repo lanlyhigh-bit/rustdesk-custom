@@ -15,6 +15,11 @@ use crate::{
 // Restart msgbox text is kept as a legacy UI fallback; Flutter handles the type as a control event.
 const RESTART_REMOTE_DEVICE_NO_DATA_TIMEOUT: Duration = Duration::from_secs(5);
 const KCP_CLOSE_REASON_FLUSH_DELAY: Duration = Duration::from_millis(30);
+/// Fallback when both the peer timestamp and the local clock report 0; a real clock is never 0.
+const ONE_NONZERO: NonZeroI64 = match NonZeroI64::new(1) {
+    Some(v) => v,
+    None => unreachable!(),
+};
 
 #[cfg(feature = "unix-file-copy-paste")]
 use crate::{clipboard::try_empty_clipboard_files, clipboard_file::unix_file_clip};
@@ -1021,7 +1026,7 @@ impl<T: InvokeUiSession> Remote<T> {
                 // Save the voice call request timestamp for the further validation.
                 self.voice_call_request_timestamp = Some(
                     NonZeroI64::new(msg.voice_call_request().req_timestamp)
-                        .unwrap_or(NonZeroI64::new(get_time()).unwrap()),
+                        .unwrap_or(NonZeroI64::new(get_time()).unwrap_or(ONE_NONZERO)),
                 );
                 allow_err!(peer.send(&msg).await);
                 self.handler.on_voice_call_waiting();

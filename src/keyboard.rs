@@ -352,18 +352,11 @@ pub mod client {
         command: bool,
     ) -> (bool, bool, bool, bool) {
         let modifiers_lock = MODIFIERS_STATE.lock().unwrap();
-        let ctrl = *modifiers_lock.get(&Key::ControlLeft).unwrap()
-            || *modifiers_lock.get(&Key::ControlRight).unwrap()
-            || ctrl;
-        let shift = *modifiers_lock.get(&Key::ShiftLeft).unwrap()
-            || *modifiers_lock.get(&Key::ShiftRight).unwrap()
-            || shift;
-        let command = *modifiers_lock.get(&Key::MetaLeft).unwrap()
-            || *modifiers_lock.get(&Key::MetaRight).unwrap()
-            || command;
-        let alt = *modifiers_lock.get(&Key::Alt).unwrap()
-            || *modifiers_lock.get(&Key::AltGr).unwrap()
-            || alt;
+        let state = |key: &Key| modifiers_lock.get(key).copied().unwrap_or(false);
+        let ctrl = state(&Key::ControlLeft) || state(&Key::ControlRight) || ctrl;
+        let shift = state(&Key::ShiftLeft) || state(&Key::ShiftRight) || shift;
+        let command = state(&Key::MetaLeft) || state(&Key::MetaRight) || command;
+        let alt = state(&Key::Alt) || state(&Key::AltGr) || alt;
 
         (alt, ctrl, shift, command)
     }
